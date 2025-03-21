@@ -1,23 +1,23 @@
 import { Boom } from '@hapi/boom'
 import axios, { AxiosRequestConfig } from 'axios'
-import { exec } from 'child_process'
 import * as Crypto from 'crypto'
 import { once } from 'events'
-import { createReadStream, createWriteStream, promises as fs, WriteStream } from 'fs'
 import type { IAudioMetadata } from 'music-metadata'
-import { tmpdir } from 'os'
-import { join } from 'path'
 import { Readable, Transform } from 'stream'
-import { URL } from 'url'
 import { proto } from '../../WAProto'
 import { DEFAULT_ORIGIN, MEDIA_HKDF_KEY_MAPPING, MEDIA_PATH_MAP } from '../Defaults'
 import { BaileysEventMap, DownloadableMessage, MediaConnInfo, MediaDecryptionKeyInfo, MediaType, MessageType, SocketConfig, WAGenericMediaMessage, WAMediaPayloadURL, WAMediaUpload, WAMediaUploadFunction, WAMessageContent } from '../Types'
 import { BinaryNode, getBinaryNodeChild, getBinaryNodeChildBuffer, jidNormalizedUser } from '../WABinary'
 import { aesDecryptGCM, aesEncryptGCM, hkdf } from './crypto'
-import { generateMessageID } from './generics'
 import { ILogger } from './logger'
+import { getPlatformAdapters, initNodePlatformAdapters } from './platform-adapters'
 
-const getTmpFilesDirectory = () => tmpdir()
+// Initialize Node adapters if in Node environment (can be called at app start)
+// This line is optional - apps should call this explicitly when needed
+if(typeof process !== 'undefined' && process.versions?.node) {
+	initNodePlatformAdapters().catch(err => console.error('Failed to initialize Node platform adapters:', err))
+}
+
 
 const getImageProcessingLibrary = async() => {
 	const [_jimp, sharp] = await Promise.all([
@@ -73,22 +73,15 @@ export async function getMediaKeys(buffer: Uint8Array | string | null | undefine
 	}
 }
 
-/** Extracts video thumb using FFMPEG */
+/** Extracts video thumb using platform adapter */
 const extractVideoThumb = async(
 	path: string,
 	destPath: string,
 	time: string,
 	size: { width: number, height: number },
-) => new Promise<void>((resolve, reject) => {
-    	const cmd = `ffmpeg -ss ${time} -i ${path} -y -vf scale=${size.width}:-1 -vframes 1 -f image2 ${destPath}`
-    	exec(cmd, (err) => {
-    		if(err) {
-			reject(err)
-		} else {
-			resolve()
-		}
-    	})
-})
+) => {
+	return getPlatformAdapters().mediaProcessing.extractVideoThumb(path, destPath, time, size)
+}
 
 export const extractImageThumb = async(bufferOrFilePath: Readable | Buffer | string, width = 32) => {
 	if(bufferOrFilePath instanceof Readable) {
@@ -191,7 +184,7 @@ export async function getAudioDuration(buffer: Buffer | string | Readable) {
 	if(Buffer.isBuffer(buffer)) {
 		metadata = await musicMetadata.parseBuffer(buffer, undefined, { duration: true })
 	} else if(typeof buffer === 'string') {
-		const rStream = createReadStream(buffer)
+		const rStream = getPlatformAdapters().fileSystem.createReadStream(buffer)
 		try {
 			metadata = await musicMetadata.parseStream(rStream, undefined, { duration: true })
 		} finally {
@@ -214,7 +207,7 @@ export async function getAudioWaveform(buffer: Buffer | string | Readable, logge
 		if(Buffer.isBuffer(buffer)) {
 			audioData = buffer
 		} else if(typeof buffer === 'string') {
-			const rStream = createReadStream(buffer)
+			const rStream = getPlatformAdapters().fileSystem.createReadStream(buffer)
 			audioData = await toBuffer(rStream)
 		} else {
 			audioData = await toBuffer(buffer)
@@ -282,7 +275,10 @@ export const getStream = async(item: WAMediaUpload, opts?: AxiosRequestConfig) =
 		return { stream: await getHttpStream(item.url, opts), type: 'remote' } as const
 	}
 
-	return { stream: createReadStream(item.url), type: 'file' } as const
+	return {
+		stream: getPlatformAdapters().fileSystem.createReadStream(item.url.toString()),
+		type: 'file'
+	} as const
 }
 
 /** generates a thumbnail for a given media, if required */
@@ -305,13 +301,16 @@ export async function generateThumbnail(
 			}
 		}
 	} else if(mediaType === 'video') {
-		const imgFilename = join(getTmpFilesDirectory(), generateMessageID() + '.jpg')
+		const fileSystem = getPlatformAdapters().fileSystem
+		const tmpFile = getPlatformAdapters().tmpFile
+		const imgFilename = tmpFile.createTempFilePath('thumb') + '.jpg'
+
 		try {
 			await extractVideoThumb(file, imgFilename, '00:00:00', { width: 32, height: 32 })
-			const buff = await fs.readFile(imgFilename)
+			const buff = await fileSystem.readFile(imgFilename)
 			thumbnail = buff.toString('base64')
 
-			await fs.unlink(imgFilename)
+			await fileSystem.unlink(imgFilename)
 		} catch(err) {
 			options.logger?.debug('could not generate video thumb: ' + err)
 		}
@@ -340,6 +339,8 @@ export const encryptedStream = async(
 	{ logger, saveOriginalFileIfRequired, opts }: EncryptedStreamOptions = {}
 ) => {
 	const { stream, type } = await getStream(media, opts)
+	const fileSystem = getPlatformAdapters().fileSystem
+	const tmpFile = getPlatformAdapters().tmpFile
 
 	logger?.debug('fetched media stream')
 
@@ -348,13 +349,13 @@ export const encryptedStream = async(
 	const encWriteStream = new Readable({ read: () => {} })
 
 	let bodyPath: string | undefined
-	let writeStream: WriteStream | undefined
+	let writeStream: any | undefined
 	let didSaveToTmpPath = false
 	if(type === 'file') {
 		bodyPath = (media as WAMediaPayloadURL).url.toString()
 	} else if(saveOriginalFileIfRequired) {
-		bodyPath = join(getTmpFilesDirectory(), mediaType + generateMessageID())
-		writeStream = createWriteStream(bodyPath)
+		bodyPath = tmpFile.createTempFilePath(mediaType)
+		writeStream = fileSystem.createWriteStream(bodyPath)
 		didSaveToTmpPath = true
 	}
 
@@ -427,7 +428,7 @@ export const encryptedStream = async(
 
 		if(didSaveToTmpPath) {
 			try {
-				await fs.unlink(bodyPath!)
+				await fileSystem.unlink(bodyPath!)
 			} catch(err) {
 				logger?.error({ err }, 'failed to save to tmp path')
 			}
