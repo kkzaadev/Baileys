@@ -2,6 +2,7 @@ import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes }
 import * as libsignal from 'libsignal'
 import { KEY_BUNDLE_TYPE } from '../Defaults'
 import { KeyPair } from '../Types'
+import { isEqualBytes } from '../Utils/bytes-utils'
 
 // insure browser & node compatibility
 const { subtle } = globalThis.crypto
@@ -194,4 +195,128 @@ export async function derivePairingCodeKey(pairingCode: string, salt: Buffer): P
 	)
 
 	return Buffer.from(derivedBits)
+}
+
+export async function encryptCBC(
+	key: Uint8Array,
+	data: Uint8Array,
+	iv: Uint8Array
+): Promise<Uint8Array> {
+	const cryptoKey = await crypto.subtle.importKey(
+		'raw',
+		key,
+		{ name: 'AES-CBC', length: 256 },
+		false,
+		['encrypt']
+	)
+
+	const ciphertext = await crypto.subtle.encrypt(
+		{ name: 'AES-CBC', iv },
+		cryptoKey,
+		data
+	)
+
+	return new Uint8Array(ciphertext)
+}
+
+export async function decryptCBC(
+	key: Uint8Array,
+	data: Uint8Array,
+	iv: Uint8Array
+): Promise<Uint8Array> {
+	const cryptoKey = await crypto.subtle.importKey(
+		'raw',
+		key,
+		{ name: 'AES-CBC', length: 256 },
+		false,
+		['decrypt']
+	)
+
+	const plaintext = await crypto.subtle.decrypt(
+		{ name: 'AES-CBC', iv },
+		cryptoKey,
+		data
+	)
+
+	return new Uint8Array(plaintext)
+}
+
+export async function calculateMAC(key: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
+	const cryptoKey = await crypto.subtle.importKey(
+		'raw',
+		key,
+		{ name: 'HMAC', hash: { name: 'SHA-256' } },
+		false,
+		['sign']
+	)
+
+	const mac = await crypto.subtle.sign('HMAC', cryptoKey, data)
+	return new Uint8Array(mac)
+}
+
+export async function hash(data: Uint8Array): Promise<Uint8Array> {
+	const digest = await crypto.subtle.digest('SHA-256', data)
+	return new Uint8Array(digest)
+}
+
+export async function deriveSecrets(
+	input: Uint8Array,
+	salt: Uint8Array,
+	info: Uint8Array,
+	chunks = 3
+): Promise<Uint8Array[]> {
+	if(salt.byteLength !== 32) {
+		throw new Error('Got salt of incorrect length')
+	}
+
+	if(!(chunks >= 1 && chunks <= 3)) {
+		throw new Error('Invalid number of chunks')
+	}
+
+	const importedKey = await crypto.subtle.importKey(
+		'raw',
+		input,
+		{ name: 'HKDF' },
+		false,
+		['deriveBits']
+	)
+
+	const derivedBits = await crypto.subtle.deriveBits(
+		{
+			name: 'HKDF',
+			hash: 'SHA-256',
+			salt,
+			info,
+		},
+		importedKey,
+		32 * chunks * 8 // bits
+	)
+
+	const out: Uint8Array[] = []
+	const arr = new Uint8Array(derivedBits)
+	for(let i = 0; i < chunks; i++) {
+		out.push(arr.slice(i * 32, (i + 1) * 32))
+	}
+
+	return out
+}
+
+export async function verifyMAC(
+	data: Uint8Array,
+	key: Uint8Array,
+	mac: Uint8Array,
+	length: number
+): Promise<void> {
+	const calculatedMac = (await calculateMAC(key, data)).slice(0, length)
+	if(mac.length !== length || calculatedMac.length !== length) {
+		throw new Error('Bad MAC length')
+	}
+
+	if(!isEqualBytes(mac, calculatedMac)) {
+		throw new Error('Bad MAC')
+	}
+}
+
+export function getRandomBytes(size: number): Uint8Array {
+	return crypto.getRandomValues(new Uint8Array(size))
 }
