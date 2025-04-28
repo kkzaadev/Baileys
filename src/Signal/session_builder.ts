@@ -1,9 +1,8 @@
 import { proto } from '../../WAProto'
 import { bytesToBase64 } from '../Utils/bytes-utils'
-import { deriveSecrets } from '../Utils/crypto'
+import { Curve, deriveSecrets } from '../Utils/crypto'
 import { BaseKeyType } from './base_key_type'
 import { ChainType } from './chain_type'
-import * as curve from './curve'
 import * as errors from './errors'
 import { ProtocolAddress } from './protocol_address'
 import queueJob from './queue_job'
@@ -40,16 +39,19 @@ export class SessionBuilder {
 				)
 			}
 
-			curve.verifySignature(
+			Curve.verify(
 				device.identityKey,
 				device.signedPreKey.publicKey,
 				device.signedPreKey.signature
 			)
-			const baseKey = curve.generateKeyPair()
+			const baseKey = Curve.generateKeyPair()
 			const devicePreKey = device.preKey?.publicKey
 			const session = await this.initSession(
 				true,
-				baseKey,
+				{
+					privateKey: baseKey.private,
+					publicKey: baseKey.public,
+				},
 				undefined,
 				device.identityKey,
 				devicePreKey,
@@ -58,7 +60,7 @@ export class SessionBuilder {
 			)
 			session.pendingPreKey = {
 				signedKeyId: device.signedPreKey.keyId,
-				baseKey: baseKey.pubKey,
+				baseKey: baseKey.public,
 			}
 			if(device.preKey) {
 				session.pendingPreKey.preKeyId = device.preKey.keyId
@@ -137,8 +139,8 @@ export class SessionBuilder {
 
 	async initSession(
 		isInitiator: boolean,
-		ourEphemeralKey: { privKey: Uint8Array, pubKey: Uint8Array },
-		ourSignedKey: { privKey: Uint8Array, pubKey: Uint8Array } | undefined,
+		ourEphemeralKey: { privateKey: Uint8Array, publicKey: Uint8Array },
+		ourSignedKey: { privateKey: Uint8Array, publicKey: Uint8Array } | undefined,
 		theirIdentityPubKey: Uint8Array,
 		theirEphemeralPubKey: Uint8Array | undefined,
 		theirSignedPubKey: Uint8Array | undefined,
@@ -170,17 +172,17 @@ export class SessionBuilder {
 		}
 
 		const ourIdentityKey = await this.storage.getOurIdentity()
-		const a1 = curve.calculateAgreement(
+		const a1 = Curve.sign(
       theirSignedPubKey!,
       ourIdentityKey.privKey
 		)
-		const a2 = curve.calculateAgreement(
+		const a2 = Curve.sign(
 			theirIdentityPubKey,
-      ourSignedKey!.privKey
+      ourSignedKey!.privateKey
 		)
-		const a3 = curve.calculateAgreement(
+		const a3 = Curve.sign(
       theirSignedPubKey!,
-      ourSignedKey!.privKey
+      ourSignedKey!.privateKey
 		)
 		if(isInitiator) {
 			sharedSecret.set(new Uint8Array(a1), 32)
@@ -192,9 +194,9 @@ export class SessionBuilder {
 
 		sharedSecret.set(new Uint8Array(a3), 32 * 3)
 		if(ourEphemeralKey && theirEphemeralPubKey) {
-			const a4 = curve.calculateAgreement(
+			const a4 = Curve.sign(
 				theirEphemeralPubKey,
-				ourEphemeralKey.privKey
+				ourEphemeralKey.privateKey
 			)
 			sharedSecret.set(new Uint8Array(a4), 32 * 4)
 		}
@@ -206,9 +208,13 @@ export class SessionBuilder {
 		)
 		const session = SessionRecord.createEntry()
 		session.registrationId = registrationId
+		const ephemeralKeyPair = Curve.generateKeyPair()
 		session.currentRatchet = {
 			rootKey: masterKey[0],
-			ephemeralKeyPair: isInitiator ? curve.generateKeyPair() : ourSignedKey!,
+			ephemeralKeyPair: isInitiator ? {
+				privateKey: ephemeralKeyPair.private,
+				publicKey: ephemeralKeyPair.public,
+			} : ourSignedKey!,
 			lastRemoteEphemeralKey: theirSignedPubKey!,
 			previousCounter: 0,
 		}
@@ -216,7 +222,7 @@ export class SessionBuilder {
 			created: Date.now(),
 			used: Date.now(),
 			remoteIdentityKey: theirIdentityPubKey,
-			baseKey: isInitiator ? ourEphemeralKey.pubKey : theirEphemeralPubKey!,
+			baseKey: isInitiator ? ourEphemeralKey.publicKey : theirEphemeralPubKey!,
 			baseKeyType: isInitiator ? BaseKeyType.OURS : BaseKeyType.THEIRS,
 			closed: -1,
 		}
@@ -232,16 +238,16 @@ export class SessionBuilder {
 
 	async calculateSendingRatchet(session: SessionEntry, remoteKey: Uint8Array) {
 		const ratchet = session.currentRatchet
-		const sharedSecret = curve.calculateAgreement(
+		const sharedSecret = Curve.sign(
 			remoteKey,
-			ratchet.ephemeralKeyPair.privKey
+			ratchet.ephemeralKeyPair.privateKey
 		)
 		const masterKey = await deriveSecrets(
 			sharedSecret,
 			ratchet.rootKey,
 			Buffer.from('WhisperRatchet')
 		)
-		session.addChain(ratchet.ephemeralKeyPair.pubKey, {
+		session.addChain(ratchet.ephemeralKeyPair.publicKey, {
 			messageKeys: {},
 			chainKey: {
 				counter: -1,

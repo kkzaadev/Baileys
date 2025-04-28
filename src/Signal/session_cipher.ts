@@ -1,8 +1,7 @@
 import { proto } from '../../WAProto'
 import { bytesToBase64 } from '../Utils/bytes-utils'
-import { calculateMAC, decryptCBC, deriveSecrets, encryptCBC, verifyMAC } from '../Utils/crypto'
+import { calculateMAC, Curve, decryptCBC, deriveSecrets, encryptCBC, verifyMAC } from '../Utils/crypto'
 import { ChainType } from './chain_type'
-import * as curve from './curve'
 import * as errors from './errors'
 import { ProtocolAddress } from './protocol_address'
 import queueJob from './queue_job'
@@ -84,7 +83,7 @@ export class SessionCipher {
 			}
 
 			const chain = session.getChain(
-				session.currentRatchet.ephemeralKeyPair.pubKey
+				session.currentRatchet.ephemeralKeyPair.publicKey
 			)
 			if(!chain || chain?.chainType === ChainType.RECEIVING) {
 				throw new Error('Tried to encrypt on a receiving chain')
@@ -98,7 +97,7 @@ export class SessionCipher {
 			)
 			delete chain.messageKeys[chain.chainKey.counter]
 			const msg = proto.SignalMessage.create()
-			msg.ratchetKey = session.currentRatchet.ephemeralKeyPair.pubKey
+			msg.ratchetKey = session.currentRatchet.ephemeralKeyPair.publicKey
 			msg.counter = chain.chainKey.counter
 			msg.previousCounter = session.currentRatchet.previousCounter
 			msg.ciphertext = await encryptCBC(
@@ -348,13 +347,17 @@ export class SessionCipher {
 		}
 
 		await this.calculateRatchet(session, remoteKey, false)
-		const prevCounter = session.getChain(ratchet.ephemeralKeyPair.pubKey)
+		const prevCounter = session.getChain(ratchet.ephemeralKeyPair.publicKey)
 		if(prevCounter) {
 			ratchet.previousCounter = prevCounter.chainKey.counter
-			session.deleteChain(ratchet.ephemeralKeyPair.pubKey)
+			session.deleteChain(ratchet.ephemeralKeyPair.publicKey)
 		}
 
-		ratchet.ephemeralKeyPair = curve.generateKeyPair()
+		const ephemeralKeyPair = Curve.generateKeyPair()
+		ratchet.ephemeralKeyPair = {
+			privateKey: ephemeralKeyPair.private,
+			publicKey: ephemeralKeyPair.public,
+		}
 		await this.calculateRatchet(session, remoteKey, true)
 		ratchet.lastRemoteEphemeralKey = remoteKey
 	}
@@ -365,9 +368,9 @@ export class SessionCipher {
 		sending: boolean
 	): Promise<void> {
 		const ratchet = session.currentRatchet
-		const sharedSecret = curve.calculateAgreement(
+		const sharedSecret = Curve.sign(
 			remoteKey,
-			ratchet.ephemeralKeyPair.privKey
+			ratchet.ephemeralKeyPair.privateKey
 		)
 		const masterKey = await deriveSecrets(
 			sharedSecret,
@@ -375,7 +378,7 @@ export class SessionCipher {
 			Buffer.from('WhisperRatchet'),
 			/*chunks*/ 2
 		)
-		const chainKey = sending ? ratchet.ephemeralKeyPair.pubKey : remoteKey
+		const chainKey = sending ? ratchet.ephemeralKeyPair.publicKey : remoteKey
 		session.addChain(chainKey, {
 			messageKeys: {},
 			chainKey: {

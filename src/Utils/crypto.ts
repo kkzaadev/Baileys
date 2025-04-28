@@ -37,6 +37,59 @@ export const Curve = {
 		} catch(error) {
 			return false
 		}
+	},
+	/**
+	 * Prefix version byte to the pub keys, required for some curve crypto functions
+	 */
+	prefixKeyInPublicKey: (pubKey: Uint8Array): Uint8Array => {
+		const KEY_BUNDLE_TYPE = new Uint8Array([5])
+		const result = new Uint8Array(KEY_BUNDLE_TYPE.length + pubKey.length)
+		result.set(KEY_BUNDLE_TYPE)
+		result.set(pubKey, KEY_BUNDLE_TYPE.length)
+		return result
+	},
+	validatePrivKey: (privKey: Uint8Array): void => {
+		if(privKey === undefined) {
+			throw new Error('Undefined private key')
+		}
+
+		if(!(privKey instanceof Uint8Array)) {
+			throw new Error(`Invalid private key type: ${typeof privKey}`)
+		}
+
+		if(privKey.byteLength !== 32) {
+			throw new Error(`Incorrect private key length: ${privKey.byteLength}`)
+		}
+	},
+	scrubPubKeyFormat: (pubKey: Uint8Array): Uint8Array => {
+		if(!(pubKey instanceof Uint8Array)) {
+			throw new Error(`Invalid public key type: ${typeof pubKey}`)
+		}
+
+		if(
+			pubKey === undefined ||
+			((pubKey.byteLength !== 33 || pubKey[0] !== 5) && pubKey.byteLength !== 32)
+		) {
+			throw new Error('Invalid public key')
+		}
+
+		if(pubKey.byteLength === 33) {
+			return pubKey.slice(1)
+		} else {
+			console.error(
+				'WARNING: Expected pubkey of length 33, please report the ST and client that generated the pubkey'
+			)
+			return pubKey
+		}
+	},
+	unclampEd25519PrivateKey: (clampedSk: Uint8Array): Uint8Array => {
+		const unclampedSk = new Uint8Array(clampedSk)
+		// Fix the first byte
+		unclampedSk[0] |= 6 // Ensure last 3 bits match expected `110` pattern
+		// Fix the last byte
+		unclampedSk[31] |= 128 // Restore the highest bit
+		unclampedSk[31] &= ~64 // Clear the second-highest bit
+		return unclampedSk
 	}
 }
 

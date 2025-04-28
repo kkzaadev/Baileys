@@ -1,12 +1,12 @@
-import { BaseKeyType } from './base_key_type'
 import { base64ToBytes, bytesToBase64 } from '../Utils/bytes-utils'
+import { BaseKeyType } from './base_key_type'
 
 const CLOSED_SESSIONS_MAX = 40
 const SESSION_RECORD_VERSION = 'v1'
 
 interface EphemeralKeyPair {
-  pubKey: Uint8Array
-  privKey: Uint8Array
+  publicKey: Uint8Array
+  privateKey: Uint8Array
 }
 
 interface CurrentRatchet {
@@ -30,7 +30,7 @@ interface PendingPreKey {
   [key: string]: any
 }
 
-export interface Chain {
+interface Chain {
   chainKey: {
     counter: number
     key: Uint8Array | null
@@ -86,8 +86,8 @@ export class SessionEntry {
 			registrationId: this.registrationId,
 			currentRatchet: {
 				ephemeralKeyPair: {
-					pubKey: bytesToBase64(this.currentRatchet.ephemeralKeyPair.pubKey),
-					privKey: bytesToBase64(this.currentRatchet.ephemeralKeyPair.privKey),
+					pubKey: bytesToBase64(this.currentRatchet.ephemeralKeyPair.publicKey),
+					privKey: bytesToBase64(this.currentRatchet.ephemeralKeyPair.privateKey),
 				},
 				lastRemoteEphemeralKey: bytesToBase64(
 					this.currentRatchet.lastRemoteEphemeralKey
@@ -118,8 +118,8 @@ export class SessionEntry {
 		obj.registrationId = data.registrationId
 		obj.currentRatchet = {
 			ephemeralKeyPair: {
-				pubKey: base64ToBytes(data.currentRatchet.ephemeralKeyPair.pubKey),
-				privKey: base64ToBytes(data.currentRatchet.ephemeralKeyPair.privKey),
+				publicKey: base64ToBytes(data.currentRatchet.ephemeralKeyPair.pubKey),
+				privateKey: base64ToBytes(data.currentRatchet.ephemeralKeyPair.privKey),
 			},
 			lastRemoteEphemeralKey: base64ToBytes(
 				data.currentRatchet.lastRemoteEphemeralKey
