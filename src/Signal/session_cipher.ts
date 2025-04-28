@@ -1,12 +1,23 @@
+import { Mutex } from 'async-mutex'
 import { proto } from '../../WAProto'
 import { bytesToBase64 } from '../Utils/bytes-utils'
 import { calculateMAC, Curve, decryptCBC, deriveSecrets, encryptCBC, verifyMAC } from '../Utils/crypto'
 import { ChainType } from './chain_type'
 import * as errors from './errors'
 import { ProtocolAddress } from './protocol_address'
-import queueJob from './queue_job'
 import { SessionBuilder } from './session_builder'
 import { SessionEntry, SessionRecord } from './session_record'
+
+const sessionLocks = new Map<string, Mutex>()
+function getSessionLock(addr: string): Mutex {
+	let mutex = sessionLocks.get(addr)
+	if(!mutex) {
+		mutex = new Mutex()
+		sessionLocks.set(addr, mutex)
+	}
+
+	return mutex
+}
 
 const VERSION = 3
 
@@ -53,97 +64,100 @@ export class SessionCipher {
 		await this.storage.storeSession(this.addr.toString(), record)
 	}
 
-	public async queueJob(awaitable: () => Promise<any>): Promise<any> {
-		return await queueJob(this.addr.toString(), awaitable)
-	}
 
 	public async encrypt(
 		data: Uint8Array
 	): Promise<{ type: number, body: Uint8Array, registrationId: number }> {
 		const ourIdentityKey = await this.storage.getOurIdentity()
-		return await this.queueJob(async() => {
-			const record = await this.getRecord()
-			if(!record) {
-				throw new errors.SessionError('No sessions')
-			}
-
-			const session = record.getOpenSession()
-			if(!session) {
-				throw new errors.SessionError('No open session')
-			}
-
-			const remoteIdentityKey = session.indexInfo.remoteIdentityKey
-			if(
-				!(await this.storage.isTrustedIdentity(this.addr.id, remoteIdentityKey))
-			) {
-				throw new errors.UntrustedIdentityKeyError(
-					this.addr.id,
-					bytesToBase64(remoteIdentityKey)
-				)
-			}
-
-			const chain = session.getChain(
-				session.currentRatchet.ephemeralKeyPair.publicKey
-			)
-			if(!chain || chain?.chainType === ChainType.RECEIVING) {
-				throw new Error('Tried to encrypt on a receiving chain')
-			}
-
-			await this.fillMessageKeys(chain, chain.chainKey.counter + 1)
-			const keys = await deriveSecrets(
-				chain.messageKeys[chain.chainKey.counter],
-				Buffer.alloc(32),
-				Buffer.from('WhisperMessageKeys')
-			)
-			delete chain.messageKeys[chain.chainKey.counter]
-			const msg = proto.SignalMessage.create()
-			msg.ratchetKey = session.currentRatchet.ephemeralKeyPair.publicKey
-			msg.counter = chain.chainKey.counter
-			msg.previousCounter = session.currentRatchet.previousCounter
-			msg.ciphertext = await encryptCBC(
-				keys[0],
-				data,
-				keys[2].slice(0, 16)
-			)
-			const msgBuf = proto.SignalMessage.encode(msg).finish()
-			const macInput = Buffer.alloc(msgBuf.byteLength + 33 * 2 + 1)
-			macInput.set(ourIdentityKey.pubKey)
-			macInput.set(session.indexInfo.remoteIdentityKey, 33)
-			macInput[33 * 2] = this._encodeTupleByte(VERSION, VERSION)
-			macInput.set(msgBuf, 33 * 2 + 1)
-			const mac = await calculateMAC(keys[1], macInput)
-			const result = Buffer.alloc(msgBuf.byteLength + 9)
-			result[0] = this._encodeTupleByte(VERSION, VERSION)
-			result.set(msgBuf, 1)
-			result.set(mac.slice(0, 8), msgBuf.byteLength + 1)
-			await this.storeRecord(record)
-			let type: number, body: Uint8Array
-			if(session.pendingPreKey) {
-				type = 3 // prekey bundle
-				const preKeyMsg = proto.PreKeySignalMessage.create({
-					identityKey: ourIdentityKey.pubKey,
-					registrationId: await this.storage.getOurRegistrationId(),
-					baseKey: session.pendingPreKey.baseKey,
-					signedPreKeyId: session.pendingPreKey.signedKeyId,
-					message: result,
-				})
-				if(session.pendingPreKey.preKeyId) {
-					preKeyMsg.preKeyId = session.pendingPreKey.preKeyId
+		const fqAddr = this.addr.toString()
+		const mutex = getSessionLock(fqAddr)
+		return mutex.acquire().then(async(release) => {
+			try {
+				const record = await this.getRecord()
+				if(!record) {
+					throw new errors.SessionError('No sessions')
 				}
 
-				body = Buffer.concat([
-					Buffer.from([this._encodeTupleByte(VERSION, VERSION)]),
-					Buffer.from(proto.PreKeySignalMessage.encode(preKeyMsg).finish()),
-				])
-			} else {
-				type = 1 // normal
-				body = result
-			}
+				const session = record.getOpenSession()
+				if(!session) {
+					throw new errors.SessionError('No open session')
+				}
 
-			return {
-				type,
-				body,
-				registrationId: session.registrationId,
+				const remoteIdentityKey = session.indexInfo.remoteIdentityKey
+				if(
+					!(await this.storage.isTrustedIdentity(this.addr.id, remoteIdentityKey))
+				) {
+					throw new errors.UntrustedIdentityKeyError(
+						this.addr.id,
+						bytesToBase64(remoteIdentityKey)
+					)
+				}
+
+				const chain = session.getChain(
+					session.currentRatchet.ephemeralKeyPair.publicKey
+				)
+				if(!chain || chain?.chainType === ChainType.RECEIVING) {
+					throw new Error('Tried to encrypt on a receiving chain')
+				}
+
+				await this.fillMessageKeys(chain, chain.chainKey.counter + 1)
+				const keys = await deriveSecrets(
+					chain.messageKeys[chain.chainKey.counter],
+					Buffer.alloc(32),
+					Buffer.from('WhisperMessageKeys')
+				)
+				delete chain.messageKeys[chain.chainKey.counter]
+				const msg = proto.SignalMessage.create()
+				msg.ratchetKey = session.currentRatchet.ephemeralKeyPair.publicKey
+				msg.counter = chain.chainKey.counter
+				msg.previousCounter = session.currentRatchet.previousCounter
+				msg.ciphertext = await encryptCBC(
+					keys[0],
+					data,
+					keys[2].slice(0, 16)
+				)
+				const msgBuf = proto.SignalMessage.encode(msg).finish()
+				const macInput = Buffer.alloc(msgBuf.byteLength + 33 * 2 + 1)
+				macInput.set(ourIdentityKey.pubKey)
+				macInput.set(session.indexInfo.remoteIdentityKey, 33)
+				macInput[33 * 2] = this._encodeTupleByte(VERSION, VERSION)
+				macInput.set(msgBuf, 33 * 2 + 1)
+				const mac = await calculateMAC(keys[1], macInput)
+				const result = Buffer.alloc(msgBuf.byteLength + 9)
+				result[0] = this._encodeTupleByte(VERSION, VERSION)
+				result.set(msgBuf, 1)
+				result.set(mac.slice(0, 8), msgBuf.byteLength + 1)
+				await this.storeRecord(record)
+				let type: number, body: Uint8Array
+				if(session.pendingPreKey) {
+					type = 3 // prekey bundle
+					const preKeyMsg = proto.PreKeySignalMessage.create({
+						identityKey: ourIdentityKey.pubKey,
+						registrationId: await this.storage.getOurRegistrationId(),
+						baseKey: session.pendingPreKey.baseKey,
+						signedPreKeyId: session.pendingPreKey.signedKeyId,
+						message: result,
+					})
+					if(session.pendingPreKey.preKeyId) {
+						preKeyMsg.preKeyId = session.pendingPreKey.preKeyId
+					}
+
+					body = Buffer.concat([
+						Buffer.from([this._encodeTupleByte(VERSION, VERSION)]),
+						Buffer.from(proto.PreKeySignalMessage.encode(preKeyMsg).finish()),
+					])
+				} else {
+					type = 1 // normal
+					body = result
+				}
+
+				return {
+					type,
+					body,
+					registrationId: session.registrationId ?? 0,
+				}
+			} finally {
+				release()
 			}
 		})
 	}
@@ -180,29 +194,35 @@ export class SessionCipher {
 	}
 
 	public async decryptWhisperMessage(data: Uint8Array): Promise<Uint8Array> {
-		return await this.queueJob(async() => {
-			const record = await this.getRecord()
-			if(!record) {
-				throw new errors.SessionError('No session record')
-			}
+		const fqAddr = this.addr.toString()
+		const mutex = getSessionLock(fqAddr)
+		return mutex.acquire().then(async(release) => {
+			try {
+				const record = await this.getRecord()
+				if(!record) {
+					throw new errors.SessionError('No session record')
+				}
 
-			const result = await this.decryptWithSessions(data, record.getSessions())
-			const remoteIdentityKey = result.session.indexInfo.remoteIdentityKey
-			if(
-				!(await this.storage.isTrustedIdentity(this.addr.id, remoteIdentityKey))
-			) {
-				throw new errors.UntrustedIdentityKeyError(
-					this.addr.id,
-					bytesToBase64(remoteIdentityKey)
-				)
-			}
+				const result = await this.decryptWithSessions(data, record.getSessions())
+				const remoteIdentityKey = result.session.indexInfo.remoteIdentityKey
+				if(
+					!(await this.storage.isTrustedIdentity(this.addr.id, remoteIdentityKey))
+				) {
+					throw new errors.UntrustedIdentityKeyError(
+						this.addr.id,
+						bytesToBase64(remoteIdentityKey)
+					)
+				}
 
-			if(record.isClosed(result.session)) {
-				console.warn('Decrypted message with closed session.')
-			}
+				if(record.isClosed(result.session)) {
+					console.warn('Decrypted message with closed session.')
+				}
 
-			await this.storeRecord(record)
-			return result.plaintext
+				await this.storeRecord(record)
+				return result.plaintext
+			} finally {
+				release()
+			}
 		})
 	}
 
@@ -215,34 +235,40 @@ export class SessionCipher {
 			throw new Error('Incompatible version number on PreKeyWhisperMessage')
 		}
 
-		return await this.queueJob(async() => {
-			let record = await this.getRecord()
-			const preKeyProto = proto.PreKeySignalMessage.decode(data.slice(1))
-			if(!record) {
-				if(preKeyProto.registrationId === null) {
-					throw new Error('No registrationId')
+		const fqAddr = this.addr.toString()
+		const mutex = getSessionLock(fqAddr)
+		return mutex.acquire().then(async(release) => {
+			try {
+				let record = await this.getRecord()
+				const preKeyProto = proto.PreKeySignalMessage.decode(data.slice(1))
+				if(!record) {
+					if(preKeyProto.registrationId === null) {
+						throw new Error('No registrationId')
+					}
+
+					record = new SessionRecord()
 				}
 
-				record = new SessionRecord()
-			}
+				if(!preKeyProto.message || !preKeyProto.baseKey) {
+					throw new Error('No message or baseKey')
+				}
 
-			if(!preKeyProto.message || !preKeyProto.baseKey) {
-				throw new Error('No message or baseKey')
-			}
+				const builder = new SessionBuilder(this.storage, this.addr)
+				const preKeyId = await builder.initIncoming(record, preKeyProto)
+				const session = record.getSession(preKeyProto.baseKey)
+				const plaintext = await this.doDecryptWhisperMessage(
+					preKeyProto.message,
+					session!
+				)
+				await this.storeRecord(record)
+				if(preKeyId) {
+					await this.storage.removePreKey(preKeyId)
+				}
 
-			const builder = new SessionBuilder(this.storage, this.addr)
-			const preKeyId = await builder.initIncoming(record, preKeyProto)
-			const session = record.getSession(preKeyProto.baseKey)
-			const plaintext = await this.doDecryptWhisperMessage(
-				preKeyProto.message,
-        session!
-			)
-			await this.storeRecord(record)
-			if(preKeyId) {
-				await this.storage.removePreKey(preKeyId)
+				return plaintext
+			} finally {
+				release()
 			}
-
-			return plaintext
 		})
 	}
 
@@ -391,25 +417,37 @@ export class SessionCipher {
 	}
 
 	public async hasOpenSession(): Promise<boolean> {
-		return await this.queueJob(async() => {
-			const record = await this.getRecord()
-			if(!record) {
-				return false
-			}
+		const fqAddr = this.addr.toString()
+		const mutex = getSessionLock(fqAddr)
+		return mutex.acquire().then(async(release) => {
+			try {
+				const record = await this.getRecord()
+				if(!record) {
+					return false
+				}
 
-			return record.haveOpenSession()
+				return record.haveOpenSession()
+			} finally {
+				release()
+			}
 		})
 	}
 
 	public async closeOpenSession(): Promise<void> {
-		return await this.queueJob(async() => {
-			const record = await this.getRecord()
-			if(record) {
-				const openSession = record.getOpenSession()
-				if(openSession) {
-					record.closeSession(openSession)
-					await this.storeRecord(record)
+		const fqAddr = this.addr.toString()
+		const mutex = getSessionLock(fqAddr)
+		return mutex.acquire().then(async(release) => {
+			try {
+				const record = await this.getRecord()
+				if(record) {
+					const openSession = record.getOpenSession()
+					if(openSession) {
+						record.closeSession(openSession)
+						await this.storeRecord(record)
+					}
 				}
+			} finally {
+				release()
 			}
 		})
 	}

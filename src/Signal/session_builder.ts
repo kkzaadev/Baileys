@@ -1,3 +1,4 @@
+import { Mutex } from 'async-mutex'
 import { proto } from '../../WAProto'
 import { bytesToBase64 } from '../Utils/bytes-utils'
 import { Curve, deriveSecrets } from '../Utils/crypto'
@@ -5,8 +6,18 @@ import { BaseKeyType } from './base_key_type'
 import { ChainType } from './chain_type'
 import * as errors from './errors'
 import { ProtocolAddress } from './protocol_address'
-import queueJob from './queue_job'
 import { SessionEntry, SessionRecord } from './session_record'
+
+const sessionLocks = new Map<string, Mutex>()
+function getSessionLock(addr: string): Mutex {
+	let mutex = sessionLocks.get(addr)
+	if(!mutex) {
+		mutex = new Mutex()
+		sessionLocks.set(addr, mutex)
+	}
+
+	return mutex
+}
 
 export class SessionBuilder {
 	private readonly addr: string
@@ -28,59 +39,64 @@ export class SessionBuilder {
     registrationId: number
   }): Promise<void> {
 		const fqAddr = this.addr
-		return await queueJob(fqAddr, async() => {
-			if(
-				!(await this.storage.isTrustedIdentity(this.addr, device.identityKey))
-			) {
-				throw new errors.UntrustedIdentityKeyError(
-					this.addr,
-					// device.identityKey
-					device.identityKey.toString()
-				)
-			}
-
-			Curve.verify(
-				device.identityKey,
-				device.signedPreKey.publicKey,
-				device.signedPreKey.signature
-			)
-			const baseKey = Curve.generateKeyPair()
-			const devicePreKey = device.preKey?.publicKey
-			const session = await this.initSession(
-				true,
-				{
-					privateKey: baseKey.private,
-					publicKey: baseKey.public,
-				},
-				undefined,
-				device.identityKey,
-				devicePreKey,
-				device.signedPreKey.publicKey,
-				device.registrationId
-			)
-			session.pendingPreKey = {
-				signedKeyId: device.signedPreKey.keyId,
-				baseKey: baseKey.public,
-			}
-			if(device.preKey) {
-				session.pendingPreKey.preKeyId = device.preKey.keyId
-			}
-
-			let record = await this.storage.loadSession(fqAddr)
-			if(!record) {
-				record = new SessionRecord()
-			} else {
-				const openSession = record.getOpenSession()
-				if(openSession) {
-					console.warn(
-						'Closing stale open session for new outgoing prekey bundle'
+		const mutex = getSessionLock(fqAddr)
+		return mutex.acquire().then(async(release) => {
+			try {
+				if(
+					!(await this.storage.isTrustedIdentity(this.addr, device.identityKey))
+				) {
+					throw new errors.UntrustedIdentityKeyError(
+						this.addr,
+						// device.identityKey
+						device.identityKey.toString()
 					)
-					record.closeSession(openSession)
 				}
-			}
 
-			record.setSession(session)
-			await this.storage.storeSession(fqAddr, record)
+				Curve.verify(
+					device.identityKey,
+					device.signedPreKey.publicKey,
+					device.signedPreKey.signature
+				)
+				const baseKey = Curve.generateKeyPair()
+				const devicePreKey = device.preKey?.publicKey
+				const session = await this.initSession(
+					true,
+					{
+						privateKey: baseKey.private,
+						publicKey: baseKey.public,
+					},
+					undefined,
+					device.identityKey,
+					devicePreKey,
+					device.signedPreKey.publicKey,
+					device.registrationId
+				)
+				session.pendingPreKey = {
+					signedKeyId: device.signedPreKey.keyId,
+					baseKey: baseKey.public,
+				}
+				if(device.preKey) {
+					session.pendingPreKey.preKeyId = device.preKey.keyId
+				}
+
+				let record = await this.storage.loadSession(fqAddr)
+				if(!record) {
+					record = new SessionRecord()
+				} else {
+					const openSession = record.getOpenSession()
+					if(openSession) {
+						console.warn(
+							'Closing stale open session for new outgoing prekey bundle'
+						)
+						record.closeSession(openSession)
+					}
+				}
+
+				record.setSession(session)
+				await this.storage.storeSession(fqAddr, record)
+			} finally {
+				release()
+			}
 		})
 	}
 
