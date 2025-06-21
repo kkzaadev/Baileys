@@ -8,11 +8,8 @@ import { isEqualBytes } from '../Utils/bytes-utils'
 const { subtle } = globalThis.crypto
 
 /** prefix version byte to the pub keys, required for some curve crypto functions */
-export const generateSignalPubKey = (pubKey: Uint8Array | Buffer) => (
-	pubKey.length === 33
-		? pubKey
-		: Buffer.concat([ KEY_BUNDLE_TYPE, pubKey ])
-)
+export const generateSignalPubKey = (pubKey: Uint8Array | Buffer) =>
+	pubKey.length === 33 ? pubKey : Buffer.concat([KEY_BUNDLE_TYPE, pubKey])
 
 export const Curve = {
 	generateKeyPair: (): KeyPair => {
@@ -27,14 +24,12 @@ export const Curve = {
 		const shared = libsignal.curve.calculateAgreement(generateSignalPubKey(publicKey), privateKey)
 		return Buffer.from(shared)
 	},
-	sign: (privateKey: Uint8Array, buf: Uint8Array) => (
-		libsignal.curve.calculateSignature(privateKey, buf)
-	),
+	sign: (privateKey: Uint8Array, buf: Uint8Array) => libsignal.curve.calculateSignature(privateKey, buf),
 	verify: (pubKey: Uint8Array, message: Uint8Array, signature: Uint8Array) => {
 		try {
 			libsignal.curve.verifySignature(generateSignalPubKey(pubKey), message, signature)
 			return true
-		} catch(error) {
+		} catch (error) {
 			return false
 		}
 	},
@@ -49,36 +44,31 @@ export const Curve = {
 		return result
 	},
 	validatePrivKey: (privKey: Uint8Array): void => {
-		if(privKey === undefined) {
+		if (privKey === undefined) {
 			throw new Error('Undefined private key')
 		}
 
-		if(!(privKey instanceof Uint8Array)) {
+		if (!(privKey instanceof Uint8Array)) {
 			throw new Error(`Invalid private key type: ${typeof privKey}`)
 		}
 
-		if(privKey.byteLength !== 32) {
+		if (privKey.byteLength !== 32) {
 			throw new Error(`Incorrect private key length: ${privKey.byteLength}`)
 		}
 	},
 	scrubPubKeyFormat: (pubKey: Uint8Array): Uint8Array => {
-		if(!(pubKey instanceof Uint8Array)) {
+		if (!(pubKey instanceof Uint8Array)) {
 			throw new Error(`Invalid public key type: ${typeof pubKey}`)
 		}
 
-		if(
-			pubKey === undefined ||
-			((pubKey.byteLength !== 33 || pubKey[0] !== 5) && pubKey.byteLength !== 32)
-		) {
+		if (pubKey === undefined || ((pubKey.byteLength !== 33 || pubKey[0] !== 5) && pubKey.byteLength !== 32)) {
 			throw new Error('Invalid public key')
 		}
 
-		if(pubKey.byteLength === 33) {
+		if (pubKey.byteLength === 33) {
 			return pubKey.slice(1)
 		} else {
-			console.error(
-				'WARNING: Expected pubkey of length 33, please report the ST and client that generated the pubkey'
-			)
+			console.error('WARNING: Expected pubkey of length 33, please report the ST and client that generated the pubkey')
 			return pubKey
 		}
 	},
@@ -127,7 +117,7 @@ export function aesDecryptGCM(ciphertext: Uint8Array, key: Uint8Array, iv: Uint8
 	decipher.setAAD(additionalData)
 	decipher.setAuthTag(tag)
 
-	return Buffer.concat([ decipher.update(enc), decipher.final() ])
+	return Buffer.concat([decipher.update(enc), decipher.final()])
 }
 
 export function aesEncryptCTR(plaintext: Uint8Array, key: Uint8Array, iv: Uint8Array) {
@@ -165,7 +155,11 @@ export function aesEncrypWithIV(buffer: Buffer, key: Buffer, IV: Buffer) {
 }
 
 // sign HMAC using SHA 256
-export function hmacSign(buffer: Buffer | Uint8Array, key: Buffer | Uint8Array, variant: 'sha256' | 'sha512' = 'sha256') {
+export function hmacSign(
+	buffer: Buffer | Uint8Array,
+	key: Buffer | Uint8Array,
+	variant: 'sha256' | 'sha512' = 'sha256'
+) {
 	return createHmac(variant, key).update(buffer).digest()
 }
 
@@ -181,27 +175,17 @@ export function md5(buffer: Buffer) {
 export async function hkdf(
 	buffer: Uint8Array | Buffer,
 	expandedLength: number,
-	info: { salt?: Buffer, info?: string }
+	info: { salt?: Buffer; info?: string }
 ): Promise<Buffer> {
 	// Ensure we have a Uint8Array for the key material
-	const inputKeyMaterial = buffer instanceof Uint8Array
-		? buffer
-		: new Uint8Array(buffer)
+	const inputKeyMaterial = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer)
 
 	// Set default values if not provided
 	const salt = info.salt ? new Uint8Array(info.salt) : new Uint8Array(0)
-	const infoBytes = info.info
-		? new TextEncoder().encode(info.info)
-		: new Uint8Array(0)
+	const infoBytes = info.info ? new TextEncoder().encode(info.info) : new Uint8Array(0)
 
 	// Import the input key material
-	const importedKey = await subtle.importKey(
-		'raw',
-		inputKeyMaterial,
-		{ name: 'HKDF' },
-		false,
-		['deriveBits']
-	)
+	const importedKey = await subtle.importKey('raw', inputKeyMaterial, { name: 'HKDF' }, false, ['deriveBits'])
 
 	// Derive bits using HKDF
 	const derivedBits = await subtle.deriveBits(
@@ -218,7 +202,6 @@ export async function hkdf(
 	return Buffer.from(derivedBits)
 }
 
-
 export async function derivePairingCodeKey(pairingCode: string, salt: Buffer): Promise<Buffer> {
 	// Convert inputs to formats Web Crypto API can work with
 	const encoder = new TextEncoder()
@@ -226,13 +209,7 @@ export async function derivePairingCodeKey(pairingCode: string, salt: Buffer): P
 	const saltBuffer = salt instanceof Uint8Array ? salt : new Uint8Array(salt)
 
 	// Import the pairing code as key material
-	const keyMaterial = await subtle.importKey(
-		'raw',
-		pairingCodeBuffer,
-		{ name: 'PBKDF2' },
-		false,
-		['deriveBits']
-	)
+	const keyMaterial = await subtle.importKey('raw', pairingCodeBuffer, { name: 'PBKDF2' }, false, ['deriveBits'])
 
 	// Derive bits using PBKDF2 with the same parameters
 	// 2 << 16 = 131,072 iterations
@@ -250,58 +227,26 @@ export async function derivePairingCodeKey(pairingCode: string, salt: Buffer): P
 	return Buffer.from(derivedBits)
 }
 
-export async function encryptCBC(
-	key: Uint8Array,
-	data: Uint8Array,
-	iv: Uint8Array
-): Promise<Uint8Array> {
-	const cryptoKey = await crypto.subtle.importKey(
-		'raw',
-		key,
-		{ name: 'AES-CBC', length: 256 },
-		false,
-		['encrypt']
-	)
+export async function encryptCBC(key: Uint8Array, data: Uint8Array, iv: Uint8Array): Promise<Uint8Array> {
+	const cryptoKey = await crypto.subtle.importKey('raw', key, { name: 'AES-CBC', length: 256 }, false, ['encrypt'])
 
-	const ciphertext = await crypto.subtle.encrypt(
-		{ name: 'AES-CBC', iv },
-		cryptoKey,
-		data
-	)
+	const ciphertext = await crypto.subtle.encrypt({ name: 'AES-CBC', iv }, cryptoKey, data)
 
 	return new Uint8Array(ciphertext)
 }
 
-export async function decryptCBC(
-	key: Uint8Array,
-	data: Uint8Array,
-	iv: Uint8Array
-): Promise<Uint8Array> {
-	const cryptoKey = await crypto.subtle.importKey(
-		'raw',
-		key,
-		{ name: 'AES-CBC', length: 256 },
-		false,
-		['decrypt']
-	)
+export async function decryptCBC(key: Uint8Array, data: Uint8Array, iv: Uint8Array): Promise<Uint8Array> {
+	const cryptoKey = await crypto.subtle.importKey('raw', key, { name: 'AES-CBC', length: 256 }, false, ['decrypt'])
 
-	const plaintext = await crypto.subtle.decrypt(
-		{ name: 'AES-CBC', iv },
-		cryptoKey,
-		data
-	)
+	const plaintext = await crypto.subtle.decrypt({ name: 'AES-CBC', iv }, cryptoKey, data)
 
 	return new Uint8Array(plaintext)
 }
 
 export async function calculateMAC(key: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
-	const cryptoKey = await crypto.subtle.importKey(
-		'raw',
-		key,
-		{ name: 'HMAC', hash: { name: 'SHA-256' } },
-		false,
-		['sign']
-	)
+	const cryptoKey = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: { name: 'SHA-256' } }, false, [
+		'sign'
+	])
 
 	const mac = await crypto.subtle.sign('HMAC', cryptoKey, data)
 	return new Uint8Array(mac)
@@ -318,28 +263,22 @@ export async function deriveSecrets(
 	info: Uint8Array,
 	chunks = 3
 ): Promise<Uint8Array[]> {
-	if(salt.byteLength !== 32) {
+	if (salt.byteLength !== 32) {
 		throw new Error('Got salt of incorrect length')
 	}
 
-	if(!(chunks >= 1 && chunks <= 3)) {
+	if (!(chunks >= 1 && chunks <= 3)) {
 		throw new Error('Invalid number of chunks')
 	}
 
-	const importedKey = await crypto.subtle.importKey(
-		'raw',
-		input,
-		{ name: 'HKDF' },
-		false,
-		['deriveBits']
-	)
+	const importedKey = await crypto.subtle.importKey('raw', input, { name: 'HKDF' }, false, ['deriveBits'])
 
 	const derivedBits = await crypto.subtle.deriveBits(
 		{
 			name: 'HKDF',
 			hash: 'SHA-256',
 			salt,
-			info,
+			info
 		},
 		importedKey,
 		32 * chunks * 8 // bits
@@ -347,25 +286,20 @@ export async function deriveSecrets(
 
 	const out: Uint8Array[] = []
 	const arr = new Uint8Array(derivedBits)
-	for(let i = 0; i < chunks; i++) {
+	for (let i = 0; i < chunks; i++) {
 		out.push(arr.slice(i * 32, (i + 1) * 32))
 	}
 
 	return out
 }
 
-export async function verifyMAC(
-	data: Uint8Array,
-	key: Uint8Array,
-	mac: Uint8Array,
-	length: number
-): Promise<void> {
+export async function verifyMAC(data: Uint8Array, key: Uint8Array, mac: Uint8Array, length: number): Promise<void> {
 	const calculatedMac = (await calculateMAC(key, data)).slice(0, length)
-	if(mac.length !== length || calculatedMac.length !== length) {
+	if (mac.length !== length || calculatedMac.length !== length) {
 		throw new Error('Bad MAC length')
 	}
 
-	if(!isEqualBytes(mac, calculatedMac)) {
+	if (!isEqualBytes(mac, calculatedMac)) {
 		throw new Error('Bad MAC')
 	}
 }

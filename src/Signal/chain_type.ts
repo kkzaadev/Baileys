@@ -1,4 +1,4 @@
 export enum ChainType {
-    SENDING = 1,
-    RECEIVING = 2,
+	SENDING = 1,
+	RECEIVING = 2
 }

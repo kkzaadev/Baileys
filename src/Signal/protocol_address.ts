@@ -1,34 +1,38 @@
 export class ProtocolAddress {
-    id: string;
-    deviceId: number;
+	id: string
+	deviceId: number
 
-    static from(encodedAddress: string): ProtocolAddress {
-        if (!encodedAddress.match(/.*\.\d+/)) {
-            throw new Error('Invalid address encoding');
-        }
-        const parts = encodedAddress.split('.');
-        return new this(parts[0], parseInt(parts[1]));
-    }
+	static from(encodedAddress: string): ProtocolAddress {
+		if (!encodedAddress.match(/.*\.\d+/)) {
+			throw new Error('Invalid address encoding')
+		}
 
-    constructor(id: string, deviceId: number) {
-        if (typeof id !== 'string') {
-            throw new TypeError('id required for addr');
-        }
-        if (id.indexOf('.') !== -1) {
-            throw new TypeError('encoded addr detected');
-        }
-        this.id = id;
-        if (typeof deviceId !== 'number') {
-            throw new TypeError('number required for deviceId');
-        }
-        this.deviceId = deviceId;
-    }
+		const parts = encodedAddress.split('.')
+		return new this(parts[0], parseInt(parts[1]))
+	}
 
-    toString(): string {
-        return `${this.id}.${this.deviceId}`;
-    }
+	constructor(id: string, deviceId: number) {
+		if (typeof id !== 'string') {
+			throw new TypeError('id required for addr')
+		}
 
-    is(other: ProtocolAddress): boolean {
-        return other.id === this.id && other.deviceId === this.deviceId;
-    }
+		if (id.indexOf('.') !== -1) {
+			throw new TypeError('encoded addr detected')
+		}
+
+		this.id = id
+		if (typeof deviceId !== 'number') {
+			throw new TypeError('number required for deviceId')
+		}
+
+		this.deviceId = deviceId
+	}
+
+	toString(): string {
+		return `${this.id}.${this.deviceId}`
+	}
+
+	is(other: ProtocolAddress): boolean {
+		return other.id === this.id && other.deviceId === this.deviceId
+	}
 }

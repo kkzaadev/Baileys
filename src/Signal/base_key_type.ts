@@ -1,4 +1,4 @@
 export enum BaseKeyType {
-  OURS = 1,
-  THEIRS = 2,
+	OURS = 1,
+	THEIRS = 2
 }

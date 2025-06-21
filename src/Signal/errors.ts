@@ -1,7 +1,10 @@
 class SignalError extends Error {}
 
 export class UntrustedIdentityKeyError extends SignalError {
-	constructor(public readonly addr: string, public readonly identityKey: string) {
+	constructor(
+		public readonly addr: string,
+		public readonly identityKey: string
+	) {
 		super()
 		this.name = 'UntrustedIdentityKeyError'
 	}
