@@ -67,3 +67,7 @@ module.exports = function (bucket, awaitable) {
     }
     return job;
 };
+
+module.exports.cleanupQueues = function () {
+   _queueAsyncBuckets.clear()
+}
