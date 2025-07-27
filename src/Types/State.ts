@@ -3,6 +3,17 @@ import type { Contact } from './Contact'
 
 export type WAConnectionState = 'open' | 'connecting' | 'close'
 
+export enum SyncState {
+	/** The socket is connecting, but we haven't received pending notifications yet. */
+	Connecting,
+	/** Pending notifications received. Buffering events until we decide whether to sync or not. */
+	AwaitingInitialSync,
+	/** The initial app state sync (history, etc.) is in progress. Buffering continues. */
+	Syncing,
+	/** Initial sync is complete, or was skipped. The socket is fully operational and events are processed in real-time. */
+	Online,
+}
+
 export type ConnectionState = {
 	/** connection is now open, connecting or closed */
 	connection: WAConnectionState

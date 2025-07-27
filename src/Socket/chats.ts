@@ -25,7 +25,7 @@ import type {
 	WAPrivacyValue,
 	WAReadReceiptsValue
 } from '../Types'
-import { ALL_WA_PATCH_NAMES } from '../Types'
+import { ALL_WA_PATCH_NAMES, SyncState } from '../Types'
 import type { LabelActionBody } from '../Types/Label'
 import {
 	chatModificationToAppPatch,
@@ -67,8 +67,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	const { ev, ws, authState, generateMessageTag, sendNode, query, onUnexpectedError } = sock
 
 	let privacySettings: { [_: string]: string } | undefined
-	let needToFlushWithAppStateSync = false
-	let pendingAppStateSync = false
+	let syncState: SyncState = SyncState.Connecting
 	/** this mutex ensures that the notifications (receipts, messages etc.) are processed in order */
 	const processingMutex = makeMutex()
 
@@ -989,15 +988,39 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			? shouldSyncHistoryMessage(historyMsg) && PROCESSABLE_HISTORY_TYPES.includes(historyMsg.syncType!)
 			: false
 
-		if (historyMsg && !authState.creds.myAppStateKeyId) {
-			logger.warn('skipping app state sync, as myAppStateKeyId is not set')
-			pendingAppStateSync = true
+		// If we receive a history message, it's the trigger to start the actual sync
+		if (historyMsg && syncState === SyncState.AwaitingInitialSync) {
+			if (shouldProcessHistoryMsg) {
+				// We are going to sync, so move to the Syncing state
+				syncState = SyncState.Syncing
+				logger.info('Transitioned to Syncing state')
+				// Let doAppStateSync handle the final flush after it's done
+			} else {
+				// We are skipping sync, so we can go online immediately and flush events
+				syncState = SyncState.Online
+				logger.info('History sync skipped, transitioning to Online state and flushing buffer')
+				ev.flush()
+			}
+		}
+
+		const doAppStateSync = async () => {
+			if (syncState === SyncState.Syncing && !authState.creds.accountSyncCounter) {
+				logger.info('Doing app state sync')
+				await resyncAppState(ALL_WA_PATCH_NAMES, true)
+
+				// Sync is complete, go online and flush everything
+				syncState = SyncState.Online
+				logger.info('App state sync complete, transitioning to Online state and flushing buffer')
+				ev.flush()
+
+				const accountSyncCounter = (authState.creds.accountSyncCounter || 0) + 1
+				ev.emit('creds.update', { accountSyncCounter })
+			}
 		}
 
 		await Promise.all([
 			(async () => {
-				if (historyMsg && authState.creds.myAppStateKeyId) {
-					pendingAppStateSync = false
+				if (shouldProcessHistoryMsg) {
 					await doAppStateSync()
 				}
 			})(),
@@ -1011,26 +1034,6 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				options: config.options
 			})
 		])
-
-		if (msg.message?.protocolMessage?.appStateSyncKeyShare && pendingAppStateSync) {
-			await doAppStateSync()
-			pendingAppStateSync = false
-		}
-
-		async function doAppStateSync() {
-			if (!authState.creds.accountSyncCounter) {
-				logger.info('doing initial app state sync')
-				await resyncAppState(ALL_WA_PATCH_NAMES, true)
-
-				const accountSyncCounter = (authState.creds.accountSyncCounter || 0) + 1
-				ev.emit('creds.update', { accountSyncCounter })
-
-				if (needToFlushWithAppStateSync) {
-					logger.debug('flushing with app state sync')
-					ev.flush()
-				}
-			}
-		}
 	})
 
 	ws.on('CB:presence', handlePresenceUpdate)
@@ -1072,15 +1075,10 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			)
 		}
 
-		if (
-			receivedPendingNotifications && // if we don't have the app state key
-			// we keep buffering events until we finally have
-			// the key and can sync the messages
-			// todo scrutinize
-			!authState.creds?.myAppStateKeyId
-		) {
+		if (receivedPendingNotifications && syncState === SyncState.Connecting) {
+			syncState = SyncState.AwaitingInitialSync
+			logger.info('Connection is now AwaitingInitialSync, buffering events')
 			ev.buffer()
-			needToFlushWithAppStateSync = true
 		}
 	})
 
