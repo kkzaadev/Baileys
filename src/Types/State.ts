@@ -11,7 +11,7 @@ export enum SyncState {
 	/** The initial app state sync (history, etc.) is in progress. Buffering continues. */
 	Syncing,
 	/** Initial sync is complete, or was skipped. The socket is fully operational and events are processed in real-time. */
-	Online,
+	Online
 }
 
 export type ConnectionState = {
