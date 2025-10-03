@@ -7,7 +7,8 @@ Share the link: https://whiskey.so/migrate-latest
 ## LIDs
 
 :::warning
-This system requires the auth state to support the `lid-mapping` key. Make sure you have updated your authentication state. Also, PLEASE cache it using [`makeCacheableSignalKeyStore()`](../api/functions/makeCacheableSignalKeyStore), as done in the Example, as the cache can be accessed & updated rather quickly.
+This system requires the auth state to support the `lid-mapping` and `device-index` keys.
+Make sure you have updated your authentication state.
 :::
 
 WhatsApp finalized its LID (Local Identifier) update (which it started in 2023). This LID system assures the anonymity of users on large groups, allowing the WhatsApp client to show a simple (`+43.......21`) to hide the phone number. This is done to ensure the privacy of users.
@@ -30,6 +31,8 @@ For the sake of businesses and Meta Ads, WhatsApp has used the LIDs for 2 years 
 
 This is the Alternate JID for the user, thus, if participant is a LID, the Alt will be a PN.
 
+IF YOU HAVE LIDs, THAT DOESN'T MEAN IT IS THE END OF THE WORLD. THE GOAL OF YOUR PROGRAM SHOULDN'T BE TO RESTORE THE PN JID ANYMORE, MIGRATE TO LIDs. PNs are WAY LESS RELIABLE.
+
 Also, in the [GroupMetadata](../api/interfaces/GroupMetadata) type, each ID type is now a LID and associated with it is a pn type (`owner` and `ownerPn`, `descOwner` and `descOwnerPn`, so on..)
 
 In the [Contact](../api/interfaces/Contact) type, there are no longer any `jid`/`lid` fields. Instead, there is an `id` field (the preferred one by WhatsApp), and there is a `phoneNumber` and `lid` field. One or the other is present depending on the `id` field. If the `id` is an LID, then the `phoneNumber` is present, and vice versa.
@@ -46,8 +49,16 @@ There is an internal store PNs and LIDs, and it can be accessed via:
 ```ts
 const store = sock.signalRepository.lidMapping
 // available methods:
-// storeLIDPNMapping, storeLIDPNMappings, getLIDForPN, getPNForLID
+// storeLIDPNMapping, storeLIDPNMappings, getLIDForPN, getLIDsForPNs, getPNForLID
 ```
+
+Additionally, `onWhatsApp` no longer returns LIDs, and instead, is automatically fetched by `getLIDForPN`/`getLIDsForPNs`.
+
+## Acks
+We no longer send ACKs on successful message delivery. WhatsApp seems to be banning users for this.
+
+## Meta Coexistence
+Meta added support for Coexistence, a feature that allows anyone to keep the WA Business App and any linked devices, while connecting to the Meta API. The support for this is there (send/recv/pair with an account that has it) now but it is a little bit experimental. If there are any issues you encounter, please report them to GitHub.
 
 ## ESM
 
