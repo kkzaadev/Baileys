@@ -533,6 +533,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const results = await Promise.allSettled(encryptionPromises)
 
 		const nodes: BinaryNode[] = []
+		const errors: Error[] = []
 		results.forEach((result, i) => {
 			if (result.status === 'fulfilled') {
 				// If the promise was fulfilled, add the resulting node to our list.
@@ -544,8 +545,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				// We get the failed ID from the original list using the index.
 				const failedId = (patchedMessages as any)[i]?.recipientJid
 				logger.warn({ id: failedId, err: result.reason?.message }, 'Skipping participant due to encryption failure')
+				errors.push(result.reason as Error)
 			}
 		})
+
+		// If no participants were successfully encrypted and this is not a group context, throw the first error
+		if (nodes.length === 0 && errors.length > 0 && recipientJids.length === 1) {
+			throw errors[0]
+		}
+
 		return { nodes, shouldIncludeDeviceIdentity }
 	}
 
@@ -879,6 +887,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						content: participants
 					})
 				}
+			}
+
+			// If no participants could be encrypted for groups/status, don't send the message
+			if ((isGroup || isStatus) && participants.length === 0) {
+				logger.warn({ jid }, 'No participants could be encrypted, skipping message send')
+				return msgId // Still return the message ID as if sent, but don't actually send
 			}
 
 			const stanza: BinaryNode = {
