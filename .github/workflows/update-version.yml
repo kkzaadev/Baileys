@@ -1,0 +1,48 @@
+name: Update WhatsApp Version
+
+on:
+  schedule:
+    # Run on the 1st of every month at 02:00 UTC
+    - cron: '0 2 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Node
+        uses: actions/setup-node@v3
+        with:
+          node-version: 22.x
+
+      - name: Update WhatsApp Web Version
+        id: update_version
+        run: npm run update:version
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v5
+        with:
+          commit-message: 'chore: update WhatsApp Web version'
+          title: 'chore: update WhatsApp Web version'
+          branch: 'update-version/stable'
+          delete-branch: true
+          labels: 'update-version'
+          body: |
+            Automated WhatsApp Web version update.
+
+            This PR updates the WhatsApp Web client revision to the latest version fetched from `web.whatsapp.com`.
+
+            **Files updated:**
+            - `src/Defaults/baileys-version.json`
+            - `src/Utils/version.ts`
+          add-paths: |
+            src/Defaults/baileys-version.json
+            src/Utils/version.ts
