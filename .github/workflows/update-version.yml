@@ -69,7 +69,7 @@ jobs:
 
           # Create new branch, commit, and push
           git checkout -b "$BRANCH_NAME"
-          git add src/Defaults/baileys-version.json src/Utils/version.ts
+          git add src/Defaults/baileys-version.json src/Defaults/index.ts src/Utils/generics.ts
           git commit -m "chore: update WhatsApp Web version"
           git push origin "$BRANCH_NAME"
 
@@ -82,7 +82,8 @@ jobs:
 
           **Files updated:**
           - \`src/Defaults/baileys-version.json\`
-          - \`src/Utils/version.ts\`" \
+          - \`src/Defaults/index.ts\`
+          - \`src/Utils/generics.ts\`" \
             --base master \
             --head "$BRANCH_NAME" \
             --label "update-version" || echo "PR already exists or could not be created"
