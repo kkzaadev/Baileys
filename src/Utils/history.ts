@@ -1,5 +1,5 @@
 import { promisify } from 'util'
-import { inflate } from 'zlib'
+import { createInflate, inflate } from 'zlib'
 import { proto } from '../../WAProto/index.js'
 import type { Chat, Contact, LIDMapping, WAMessage } from '../Types'
 import { WAMessageStubType } from '../Types'
@@ -31,16 +31,19 @@ const extractPnFromMessages = (messages: proto.IHistorySyncMsg[]): string | unde
 
 export const downloadHistory = async (msg: proto.Message.IHistorySyncNotification, options: RequestInit) => {
 	const stream = await downloadContentFromMessage(msg, 'md-msg-hist', { options })
+	const gunzip = createInflate()
+
+	stream.pipe(gunzip)
+	stream.on('error', err => {
+		gunzip.destroy(err)
+	})
+
 	const bufferArray: Buffer[] = []
-	for await (const chunk of stream) {
+	for await (const chunk of gunzip) {
 		bufferArray.push(chunk)
 	}
 
-	let buffer: Buffer = Buffer.concat(bufferArray)
-
-	// decompress buffer
-	buffer = await inflatePromise(buffer)
-
+	const buffer = Buffer.concat(bufferArray)
 	const syncData = proto.HistorySync.decode(buffer)
 	return syncData
 }
