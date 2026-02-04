@@ -15,11 +15,11 @@ export class ProtobufChunkStream {
 		if (Symbol.asyncIterator in stream) {
 			this.iterator = (stream as AsyncIterable<Buffer>)[Symbol.asyncIterator]()
 		} else if ('iterator' in stream) {
-            // Readable in Node < 10 or generic iterator?
-            // Readable should have Symbol.asyncIterator in modern node.
-            this.iterator = (stream as any)[Symbol.asyncIterator]()
-        } else {
-            // Fallback for some streams
+			// Readable in Node < 10 or generic iterator?
+			// Readable should have Symbol.asyncIterator in modern node.
+			this.iterator = (stream as any)[Symbol.asyncIterator]()
+		} else {
+			// Fallback for some streams
 			this.iterator = (Readable.toWeb(stream as Readable) as any)[Symbol.asyncIterator]()
 		}
 	}
@@ -35,20 +35,22 @@ export class ProtobufChunkStream {
 				this.ended = true
 				return false
 			}
+
 			this.currentBuffer = result.value
 			this.position = 0
 		}
 
-        while (this.currentBuffer.length - this.position < minBytes) {
-            const result = await this.iterator.next()
-            if (result.done) {
-                this.ended = true
-                return false
-            }
-            const remaining = this.currentBuffer.subarray(this.position)
-            this.currentBuffer = Buffer.concat([remaining, result.value])
-            this.position = 0
-        }
+		while (this.currentBuffer.length - this.position < minBytes) {
+			const result = await this.iterator.next()
+			if (result.done) {
+				this.ended = true
+				return false
+			}
+
+			const remaining = this.currentBuffer.subarray(this.position)
+			this.currentBuffer = Buffer.concat([remaining, result.value])
+			this.position = 0
+		}
 
 		return true
 	}
@@ -63,14 +65,14 @@ export class ProtobufChunkStream {
 				throw new Error('Unexpected end of stream while reading varint')
 			}
 
-            if (!this.currentBuffer) {
-                throw new Error('Buffer is null despite ensureData returning true')
-            }
+			if (!this.currentBuffer) {
+				throw new Error('Buffer is null despite ensureData returning true')
+			}
 
 			const byte = this.currentBuffer[this.position++]
-            if (byte === undefined) {
-                throw new Error('Unexpected undefined byte')
-            }
+			if (byte === undefined) {
+				throw new Error('Unexpected undefined byte')
+			}
 
 			result |= (byte & 0x7f) << shift
 			shift += 7
@@ -91,9 +93,9 @@ export class ProtobufChunkStream {
 			throw new Error(`Unexpected end of stream while reading ${length} bytes`)
 		}
 
-        if (!this.currentBuffer) {
-            throw new Error('Buffer is null despite ensureData returning true')
-        }
+		if (!this.currentBuffer) {
+			throw new Error('Buffer is null despite ensureData returning true')
+		}
 
 		const buf = this.currentBuffer.subarray(this.position, this.position + length)
 		this.position += length
@@ -119,20 +121,21 @@ export async function* decodeSyncdMutationsStream(
 			const length = await reader.readVarint()
 			const buffer = await reader.readBuffer(length)
 
-			if (fieldNumber === 1) { // mutations
+			if (fieldNumber === 1) {
+				// mutations
 				yield proto.SyncdMutation.decode(buffer)
 			}
 		} else {
-            await skipField(reader, wireType)
+			await skipField(reader, wireType)
 		}
 	}
 }
 
 export type SnapshotStreamPart =
-    | { type: 'version', value: proto.ISyncdVersion }
-    | { type: 'record', value: proto.ISyncdRecord }
-    | { type: 'mac', value: Uint8Array }
-    | { type: 'keyId', value: proto.IKeyId }
+	| { type: 'version'; value: proto.ISyncdVersion }
+	| { type: 'record'; value: proto.ISyncdRecord }
+	| { type: 'mac'; value: Uint8Array }
+	| { type: 'keyId'; value: proto.IKeyId }
 
 export async function* decodeSyncdSnapshotStream(
 	stream: Readable | AsyncIterable<Buffer>
@@ -148,43 +151,43 @@ export async function* decodeSyncdSnapshotStream(
 			const length = await reader.readVarint()
 			const buffer = await reader.readBuffer(length)
 
-            switch (fieldNumber) {
-                case 1:
-                    yield { type: 'version', value: proto.SyncdVersion.decode(buffer) }
-                    break
-                case 2:
-                    yield { type: 'record', value: proto.SyncdRecord.decode(buffer) }
-                    break
-                case 3:
-                    yield { type: 'mac', value: buffer }
-                    break
-                case 4:
-                    yield { type: 'keyId', value: proto.KeyId.decode(buffer) }
-                    break
-            }
+			switch (fieldNumber) {
+				case 1:
+					yield { type: 'version', value: proto.SyncdVersion.decode(buffer) }
+					break
+				case 2:
+					yield { type: 'record', value: proto.SyncdRecord.decode(buffer) }
+					break
+				case 3:
+					yield { type: 'mac', value: buffer }
+					break
+				case 4:
+					yield { type: 'keyId', value: proto.KeyId.decode(buffer) }
+					break
+			}
 		} else {
-            await skipField(reader, wireType)
+			await skipField(reader, wireType)
 		}
 	}
 }
 
 // Helper to skip fields
 async function skipField(reader: ProtobufChunkStream, wireType: number) {
-    switch (wireType) {
-        case 0: // Varint
-            await reader.readVarint()
-            break
-        case 1: // 64-bit
-            await reader.readBuffer(8)
-            break
-        case 2: // Length-delimited
-            const len = await reader.readVarint()
-            await reader.readBuffer(len)
-            break
-        case 5: // 32-bit
-            await reader.readBuffer(4)
-            break
-        default:
-            throw new Error(`Unsupported wire type ${wireType} for skipping`)
-    }
+	switch (wireType) {
+		case 0: // Varint
+			await reader.readVarint()
+			break
+		case 1: // 64-bit
+			await reader.readBuffer(8)
+			break
+		case 2: // Length-delimited
+			const len = await reader.readVarint()
+			await reader.readBuffer(len)
+			break
+		case 5: // 32-bit
+			await reader.readBuffer(4)
+			break
+		default:
+			throw new Error(`Unsupported wire type ${wireType} for skipping`)
+	}
 }

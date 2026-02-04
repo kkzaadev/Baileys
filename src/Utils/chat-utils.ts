@@ -205,7 +205,9 @@ export const encodeSyncdPatch = async (
 }
 
 export const decodeSyncdMutations = async (
-	msgMutations: (proto.ISyncdMutation | proto.ISyncdRecord)[] | AsyncIterable<proto.ISyncdMutation | proto.ISyncdRecord>,
+	msgMutations:
+		| (proto.ISyncdMutation | proto.ISyncdRecord)[]
+		| AsyncIterable<proto.ISyncdMutation | proto.ISyncdRecord>,
 	initialState: LTHashState,
 	getAppStateSyncKey: FetchAppStateSyncKey,
 	onMutation: (mutation: ChatMutation) => void,
