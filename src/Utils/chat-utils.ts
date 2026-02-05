@@ -290,7 +290,9 @@ export const decodeSyncdPatch = async (
 		const mutationMacs: Uint8Array[] = []
 
 		const mutations = msg.mutations!
-		let stream: AsyncIterable<proto.ISyncdMutation | proto.ISyncdRecord> = mutations as any
+		let stream:
+			| (proto.ISyncdMutation | proto.ISyncdRecord)[]
+			| AsyncIterable<proto.ISyncdMutation | proto.ISyncdRecord> = mutations as any
 
 		// if mutations is an array, we can check it, otherwise we iterate
 		if (Array.isArray(mutations)) {
@@ -310,25 +312,24 @@ export const decodeSyncdPatch = async (
 			}
 		} else {
 			const mutationStream = mutations as unknown as AsyncIterable<proto.ISyncdMutation>
-			stream = {
-				[Symbol.asyncIterator]: async function* () {
-					for await (const mutation of mutationStream) {
-						mutationMacs.push(mutation.record!.value!.blob!.slice(-32))
-						yield mutation
-					}
-
-					const patchMac = generatePatchMac(
-						msg.snapshotMac!,
-						mutationMacs,
-						toNumber(msg.version!.version),
-						name,
-						mainKey.patchMacKey
-					)
-					if (Buffer.compare(patchMac, msg.patchMac!) !== 0) {
-						throw new Boom('Invalid patch mac')
-					}
-				}
+			const mutationList: (proto.ISyncdMutation | proto.ISyncdRecord)[] = []
+			for await (const mutation of mutationStream) {
+				mutationMacs.push(mutation.record!.value!.blob!.slice(-32))
+				mutationList.push(mutation)
 			}
+
+			const patchMac = generatePatchMac(
+				msg.snapshotMac!,
+				mutationMacs,
+				toNumber(msg.version!.version),
+				name,
+				mainKey.patchMacKey
+			)
+			if (Buffer.compare(patchMac, msg.patchMac!) !== 0) {
+				throw new Boom('Invalid patch mac')
+			}
+
+			stream = mutationList
 		}
 
 		return decodeSyncdMutations(stream, initialState, getAppStateSyncKey, onMutation, validateMacs)
@@ -411,14 +412,36 @@ export const downloadExternalBlob = async (blob: proto.IExternalBlobReference, o
 	const stream = await downloadExternalBlobStream(blob, options)
 	if (blob.fileSizeBytes) {
 		const size = toNumber(blob.fileSizeBytes)
-		const buffer = Buffer.allocUnsafe(size)
-		let offset = 0
-		for await (const chunk of stream) {
-			chunk.copy(buffer, offset)
-			offset += chunk.length
-		}
+		// Only preallocate if the size is valid and reasonable
+		if (size > 0) {
+			const buffer = Buffer.allocUnsafe(size)
+			let offset = 0
+			let overflow = false
+			const chunks: Buffer[] = []
 
-		return buffer.subarray(0, offset)
+			for await (const chunk of stream) {
+				if (overflow) {
+					chunks.push(chunk)
+					continue
+				}
+
+				if (offset + chunk.length > buffer.length) {
+					overflow = true
+					chunks.push(buffer.subarray(0, offset))
+					chunks.push(chunk)
+					continue
+				}
+
+				chunk.copy(buffer, offset)
+				offset += chunk.length
+			}
+
+			if (overflow) {
+				return Buffer.concat(chunks)
+			}
+
+			return buffer.subarray(0, offset)
+		}
 	}
 
 	const bufferArray: Buffer[] = []
