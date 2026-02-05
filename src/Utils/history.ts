@@ -1,5 +1,4 @@
-import { promisify } from 'util'
-import { createInflate, inflate } from 'zlib'
+import { createInflate } from 'zlib'
 import { proto } from '../../WAProto/index.js'
 import type { Chat, Contact, LIDMapping, WAMessage } from '../Types'
 import { WAMessageStubType } from '../Types'
@@ -8,8 +7,6 @@ import { toNumber } from './generics'
 import type { ILogger } from './logger.js'
 import { normalizeMessageContent } from './messages'
 import { downloadContentFromMessage } from './messages-media'
-
-const inflatePromise = promisify(inflate)
 
 const extractPnFromMessages = (messages: proto.IHistorySyncMsg[]): string | undefined => {
 	for (const msgItem of messages) {
@@ -31,15 +28,15 @@ const extractPnFromMessages = (messages: proto.IHistorySyncMsg[]): string | unde
 
 export const downloadHistory = async (msg: proto.Message.IHistorySyncNotification, options: RequestInit) => {
 	const stream = await downloadContentFromMessage(msg, 'md-msg-hist', { options })
-	const gunzip = createInflate()
+	const inflateStream = createInflate()
 
-	stream.pipe(gunzip)
+	stream.pipe(inflateStream)
 	stream.on('error', err => {
-		gunzip.destroy(err)
+		inflateStream.destroy(err)
 	})
 
 	const bufferArray: Buffer[] = []
-	for await (const chunk of gunzip) {
+	for await (const chunk of inflateStream) {
 		bufferArray.push(chunk)
 	}
 
@@ -148,7 +145,16 @@ export const downloadAndProcessHistorySyncNotification = async (
 ) => {
 	let historyMsg: proto.HistorySync
 	if (msg.initialHistBootstrapInlinePayload) {
-		historyMsg = proto.HistorySync.decode(await inflatePromise(msg.initialHistBootstrapInlinePayload))
+		const buffer = Buffer.from(msg.initialHistBootstrapInlinePayload)
+		const inflateStream = createInflate()
+		inflateStream.push(buffer)
+		inflateStream.push(null)
+
+		const bufferArray: Buffer[] = []
+		for await (const chunk of inflateStream) {
+			bufferArray.push(chunk)
+		}
+		historyMsg = proto.HistorySync.decode(Buffer.concat(bufferArray))
 	} else {
 		historyMsg = await downloadHistory(msg, options)
 	}
