@@ -154,6 +154,7 @@ export const downloadAndProcessHistorySyncNotification = async (
 		for await (const chunk of inflateStream) {
 			bufferArray.push(chunk)
 		}
+
 		historyMsg = proto.HistorySync.decode(Buffer.concat(bufferArray))
 	} else {
 		historyMsg = await downloadHistory(msg, options)
