@@ -93,22 +93,12 @@ export const decodeDecompressedBinaryNode = (
 		}
 	}
 
-	const unpackByte = (tag: number, value: number) => {
-		if (tag === TAGS.NIBBLE_8) {
-			return unpackNibble(value)
-		} else if (tag === TAGS.HEX_8) {
-			return unpackHex(value)
-		} else {
-			throw new Error('unknown tag: ' + tag)
-		}
-	}
-
 	const readPacked8 = (tag: number) => {
 		const startByte = readByte()!
 		const length = startByte & 127
 		const value = Buffer.allocUnsafe(length * 2)
 
-		const unpack = tag === TAGS.NIBBLE_8 ? unpackNibble : (tag === TAGS.HEX_8 ? unpackHex : null)
+		const unpack = tag === TAGS.NIBBLE_8 ? unpackNibble : tag === TAGS.HEX_8 ? unpackHex : null
 		if (!unpack) {
 			throw new Error('unknown tag: ' + tag)
 		}
