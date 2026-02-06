@@ -51,7 +51,7 @@ export const PROCESSABLE_HISTORY_TYPES = [
 export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
 	version: version as WAVersion,
 	browser: Browsers.macOS('Chrome'),
-	waWebSocketUrl: 'wss://web.whatsapp.com/ws/chat',
+	waWebSocketUrl: 'wss://127.0.0.1:8080/ws/chat',
 	connectTimeoutMs: 20_000,
 	keepAliveIntervalMs: 30_000,
 	logger: logger.child({ class: 'baileys' }),

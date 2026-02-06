@@ -70,7 +70,11 @@ export const makeNoiseHandler = ({
 	let counter = 0
 	let sentIntro = false
 
-	let inBytes: Buffer = Buffer.alloc(0)
+	// Buffer list to avoid repeated Buffer.concat on every WebSocket message.
+	// Under load, multiple messages can arrive before processData runs;
+	// pushing references is O(1) vs O(n) copy on each concat.
+	let bufferList: Buffer[] = []
+	let bufferBytes = 0
 
 	let transport: TransportState | null = null
 	let isWaitingForTransport = false
@@ -138,21 +142,30 @@ export const makeNoiseHandler = ({
 		logger.trace('Noise handler transitioned to Transport state')
 
 		if (pendingOnFrame) {
-			logger.trace({ length: inBytes.length }, 'Flushing buffered frames after transport ready')
+			logger.trace({ length: bufferBytes }, 'Flushing buffered frames after transport ready')
 			await processData(pendingOnFrame)
 			pendingOnFrame = null
 		}
 	}
 
 	const processData = async (onFrame: (buff: Uint8Array | BinaryNode) => void) => {
-		let size: number | undefined
+		// Flatten accumulated buffers into a single contiguous buffer for parsing.
+		// This is a single concat for all buffered chunks, instead of one per WebSocket message.
+		let inBytes: Buffer
+		if (bufferList.length === 0) {
+			return
+		} else if (bufferList.length === 1) {
+			inBytes = bufferList[0]!
+		} else {
+			inBytes = Buffer.concat(bufferList, bufferBytes)
+		}
 
 		while (true) {
-			if (inBytes.length < 3) return
+			if (inBytes.length < 3) break
 
-			size = (inBytes[0]! << 16) | (inBytes[1]! << 8) | inBytes[2]!
+			const size = (inBytes[0]! << 16) | (inBytes[1]! << 8) | inBytes[2]!
 
-			if (inBytes.length < size + 3) return
+			if (inBytes.length < size + 3) break
 
 			let frame: Uint8Array | BinaryNode = inBytes.subarray(3, size + 3)
 			inBytes = inBytes.subarray(size + 3)
@@ -167,6 +180,15 @@ export const makeNoiseHandler = ({
 			}
 
 			onFrame(frame)
+		}
+
+		// Store remaining bytes
+		if (inBytes.length > 0) {
+			bufferList = [inBytes]
+			bufferBytes = inBytes.length
+		} else {
+			bufferList = []
+			bufferBytes = 0
 		}
 	}
 
@@ -250,16 +272,15 @@ export const makeNoiseHandler = ({
 			return frame
 		},
 		decodeFrame: async (newData: Buffer | Uint8Array, onFrame: (buff: Uint8Array | BinaryNode) => void) => {
+			// Push reference — no copy. Buffer.from only needed for plain Uint8Array
+			// (e.g., views into shared ArrayBuffers from WebSocket internals).
+			const buf = Buffer.isBuffer(newData) ? newData : Buffer.from(newData)
+			bufferList.push(buf)
+			bufferBytes += buf.length
+
 			if (isWaitingForTransport) {
-				inBytes = Buffer.concat([inBytes, newData])
 				pendingOnFrame = onFrame
 				return
-			}
-
-			if (inBytes.length === 0) {
-				inBytes = Buffer.from(newData)
-			} else {
-				inBytes = Buffer.concat([inBytes, newData])
 			}
 
 			await processData(onFrame)

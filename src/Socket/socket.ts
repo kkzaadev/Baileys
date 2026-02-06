@@ -631,6 +631,13 @@ export const makeSocket = (config: SocketConfig) => {
 		clearInterval(keepAliveReq)
 		clearTimeout(qrTimer)
 
+		// Flush any buffered signal store writes before closing
+		try {
+			await authState.keys.flush?.()
+		} catch (err) {
+			logger.error({ err }, 'failed to flush signal store on close')
+		}
+
 		ws.removeAllListeners('close')
 		ws.removeAllListeners('open')
 		ws.removeAllListeners('message')
