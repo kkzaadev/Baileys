@@ -1,5 +1,11 @@
-import * as $protobuf from "protobufjs";
-import Long = require("long");
+// Minimal type stubs replacing protobufjs and long imports.
+// Bridge (prost/serde) returns int64 as plain JS numbers, so Long = number.
+type Long = number;
+declare namespace $protobuf {
+    interface Writer { finish(): Uint8Array; }
+    type Reader = Uint8Array;
+    interface IConversionOptions { [key: string]: any; }
+}
 export namespace proto {
 
     interface IADVDeviceIdentity {

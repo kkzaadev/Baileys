@@ -1,7 +1,8 @@
 import NodeCache from '@cacheable/node-cache'
 import { Boom } from '@hapi/boom'
 import { randomBytes } from 'crypto'
-import Long from 'long'
+import { decryptMessageStanza, encodeNode } from 'whatsapp-rust-bridge'
+import type { MessageDecryptionContext } from 'whatsapp-rust-bridge'
 import { proto } from '../../WAProto/index.js'
 import {
 	DEFAULT_CACHE_TTLS,
@@ -28,8 +29,8 @@ import {
 	cleanMessage,
 	Curve,
 	decodeMediaRetryNode,
+	createBridgeDecryptionContext,
 	decodeMessageNode,
-	decryptMessageNode,
 	delay,
 	derivePairingCodeKey,
 	encodeBigEndian,
@@ -129,7 +130,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const fetchMessageHistory = async (
 		count: number,
 		oldestMsgKey: WAMessageKey,
-		oldestMsgTimestamp: number | Long
+		oldestMsgTimestamp: number
 	): Promise<string> => {
 		if (!authState.creds.me?.id) {
 			throw new Boom('Not authenticated')
@@ -1168,18 +1169,45 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		let acked = false
 
 		try {
-			const {
-				fullMessage: msg,
-				category,
-				author,
-				decrypt
-			} = decryptMessageNode(node, authState.creds.me!.id, authState.creds.me!.lid || '', signalRepository, logger)
+			// Encode the BinaryNode to bytes for the bridge
+			const stanzaBytes = encodeNode(node)
 
-			const alt = msg.key.participantAlt || msg.key.remoteJidAlt
-			// store new mappings we didn't have before
-			if (!!alt) {
+			// Create bridge-compatible storage context from Baileys auth state
+			const bridgeCtx = createBridgeDecryptionContext(authState, signalRepository)
+
+			// Single bridge call: parse + decrypt + LID mapping + SKDM processing
+			const decryptResult = await decryptMessageStanza(
+				stanzaBytes,
+				authState.creds.me!.id,
+				authState.creds.me!.lid || null,
+				bridgeCtx as unknown as MessageDecryptionContext
+			)
+
+			// Build WAMessage from bridge result
+			const msg: WAMessage = {
+				key: decryptResult.key || {},
+				messageTimestamp: decryptResult.messageTimestamp,
+				pushName: decryptResult.pushName,
+				message: decryptResult.message || undefined,
+				category: decryptResult.category,
+				broadcast: !!decryptResult.key?.remoteJid?.endsWith?.('@broadcast'),
+				...(decryptResult.verifiedBizName ? { verifiedBizName: decryptResult.verifiedBizName } : {}),
+				...(decryptResult.retryCount !== undefined ? { retryCount: decryptResult.retryCount } : {}),
+				...(decryptResult.status !== undefined ? { status: decryptResult.status } : {}),
+				...(decryptResult.messageStubType !== undefined ? {
+					messageStubType: decryptResult.messageStubType,
+					messageStubParameters: decryptResult.messageStubParameters,
+				} : {}),
+			}
+
+			const category = decryptResult.category as string
+			const author = decryptResult.author as string
+
+			// Additional LID mapping from message key alt fields
+			const alt = (msg.key as any)?.participantAlt || (msg.key as any)?.remoteJidAlt
+			if (alt) {
 				const altServer = jidDecode(alt)?.server
-				const primaryJid = msg.key.participant || msg.key.remoteJid!
+				const primaryJid = msg.key!.participant || msg.key!.remoteJid!
 				if (altServer === 'lid') {
 					if (!(await signalRepository.lidMapping.getPNForLID(alt))) {
 						await signalRepository.lidMapping.storeLIDPNMappings([{ lid: alt, pn: primaryJid }])
@@ -1192,7 +1220,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			}
 
 			await messageMutex.mutex(async () => {
-				await decrypt()
 
 				if (msg.key?.remoteJid && msg.key?.id && msg.message && messageRetryManager) {
 					messageRetryManager.addRecentMessage(msg.key.remoteJid, msg.key.id, msg.message)

@@ -1,4 +1,5 @@
 import { Boom } from '@hapi/boom'
+import { processDecryptedPlaintext } from 'whatsapp-rust-bridge'
 import { proto } from '../../WAProto/index.js'
 import type { WAMessage, WAMessageKey } from '../Types'
 import type { SignalRepositoryWithLIDStore } from '../Types/Signal'
@@ -16,7 +17,6 @@ import {
 	isPnUser
 	//	transferDevice
 } from '../WABinary'
-import { unpadRandomMax16 } from './generics'
 import type { ILogger } from './logger'
 
 export const getDecryptionJid = async (sender: string, repository: SignalRepositoryWithLIDStore): Promise<string> => {
@@ -298,16 +298,29 @@ export const decryptMessageNode = (
 								throw new Error(`Unknown e2e type: ${e2eType}`)
 						}
 
-						let msg: proto.IMessage = proto.Message.decode(
-							e2eType !== 'plaintext' ? unpadRandomMax16(msgBuffer) : msgBuffer
+						// Use bridge for post-decrypt processing:
+						// unpad + proto decode + DSM unwrap + SKDM extraction
+						// Padding version 3 = no unpadding (used for plaintext)
+						// Padding version 2 = standard WhatsApp padding (used for encrypted)
+						const paddingVersion = e2eType === 'plaintext' ? 3 : 2
+						const processed = processDecryptedPlaintext(
+							msgBuffer,
+							paddingVersion,
+							fullMessage.key.fromMe || false
 						)
-						msg = msg.deviceSentMessage?.message || msg
-						if (msg.senderKeyDistributionMessage) {
+
+						const msg = processed.message as proto.IMessage
+
+						if (processed.hasInvalidDsm) {
+							logger.warn({ key: fullMessage.key }, 'DeviceSentMessage from non-self sender')
+						}
+
+						if (processed.hasSkdm && processed.skdm) {
 							//eslint-disable-next-line max-depth
 							try {
 								await repository.processSenderKeyDistributionMessage({
 									authorJid: author,
-									item: msg.senderKeyDistributionMessage
+									item: processed.skdm
 								})
 							} catch (err) {
 								logger.error({ key: fullMessage.key, err }, 'failed to process sender key distribution message')
