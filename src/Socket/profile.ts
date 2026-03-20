@@ -10,6 +10,11 @@ export const makeProfileMethods = (ctx: SocketContext) => ({
 		await ctx.getClient().setPushName(name)
 	},
 
+	/** Alias for setPushName (original Baileys compat) */
+	updateProfileName: async (name: string) => {
+		await ctx.getClient().setPushName(name)
+	},
+
 	getPushName: async () => {
 		return ctx.getClient().getPushName()
 	},
@@ -33,5 +38,5 @@ export const makeProfileMethods = (ctx: SocketContext) => ({
 
 	updateProfileStatus: async (status: string) => {
 		await ctx.getClient().updateProfileStatus(status)
-	},
+	}
 })

@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile, unlink } from 'fs/promises'
+import { mkdir, readFile, unlink, writeFile } from 'fs/promises'
 import { join } from 'path'
 import type { JsStoreCallbacks } from 'whatsapp-rust-bridge'
 
@@ -41,6 +41,6 @@ export async function useBridgeStore(folder: string): Promise<JsStoreCallbacks> 
 			} catch {
 				// ignore if file doesn't exist
 			}
-		},
+		}
 	}
 }

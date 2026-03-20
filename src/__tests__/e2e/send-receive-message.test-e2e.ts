@@ -36,7 +36,7 @@ describe('E2E Tests', () => {
 			sock = makeWASocket({
 				auth: {
 					creds: state.creds,
-					keys: state.keys,
+					keys: state.keys
 				},
 				waWebSocketUrl: process.env.SOCKET_URL ?? 'wss://127.0.0.1:8080/ws/chat',
 				logger,
@@ -85,7 +85,7 @@ describe('E2E Tests', () => {
 
 	afterAll(async () => {
 		if (sock) {
-			await sock.end(undefined)
+			await sock.end()
 		}
 	})
 

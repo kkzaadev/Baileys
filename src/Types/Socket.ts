@@ -1,5 +1,6 @@
 import type { Agent } from 'https'
 import type { URL } from 'url'
+import type { CacheConfig } from 'whatsapp-rust-bridge'
 import { proto } from '../../WAProto/index.js'
 import type { ILogger } from '../Utils/logger'
 import type { AuthenticationState, TransactionCapabilityOptions } from './Auth'
@@ -116,4 +117,18 @@ export type SocketConfig = {
 
 	/** options for HTTP fetch requests */
 	options: RequestInit
+
+	/**
+	 * Cache configuration — tune TTL, capacity, or provide custom store backends.
+	 * Omitted fields keep defaults. See CacheConfig type for details.
+	 *
+	 * @example
+	 * // Group cache on Redis, everything else in-memory
+	 * cache: { group: { store: redisCacheStore } }
+	 *
+	 * @example
+	 * // All caches on Redis
+	 * cache: { store: redisCacheStore }
+	 */
+	cache?: CacheConfig
 }

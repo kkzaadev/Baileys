@@ -15,5 +15,5 @@ export const makeNewsletterMethods = (ctx: SocketContext) => ({
 
 	newsletterUnsubscribe: async (jid: string) => {
 		await ctx.getClient().newsletterUnsubscribe(jid)
-	},
+	}
 })

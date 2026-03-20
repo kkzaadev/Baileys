@@ -7,5 +7,5 @@ export const makeBlockingMethods = (ctx: SocketContext) => ({
 
 	fetchBlocklist: async () => {
 		return ctx.getClient().fetchBlocklist()
-	},
+	}
 })

@@ -1,7 +1,7 @@
 import { Boom } from '@hapi/boom'
-import type { WhatsAppEvent, MessageInfo } from 'whatsapp-rust-bridge'
+import type { MessageInfo, WhatsAppEvent } from 'whatsapp-rust-bridge'
 import { proto } from '../../WAProto/index.js'
-import type { AuthenticationCreds, BaileysEventMap, ConnectionState, WAMessage, WAPresence } from '../Types'
+import type { BaileysEventMap, ConnectionState, WAMessage, WAPresence } from '../Types'
 import { DisconnectReason, WAProto } from '../Types'
 import type { SocketContext } from './types'
 import { jidStr } from './types'
@@ -156,16 +156,19 @@ export const makeEventHandler = (ctx: SocketContext) => {
 				const sender = d.source.sender
 				const firstId = d.message_ids?.[0]
 				if (chat && firstId) {
-					ev.emit('message-receipt.update', [{
-						key: {
-							remoteJid: jidStr(chat),
-							id: firstId,
-							fromMe: d.source.is_from_me,
-							participant: d.source.is_group ? jidStr(sender) : undefined
-						},
-						receipt: { receiptTimestamp: d.timestamp }
-					}])
+					ev.emit('message-receipt.update', [
+						{
+							key: {
+								remoteJid: jidStr(chat),
+								id: firstId,
+								fromMe: d.source.is_from_me,
+								participant: d.source.is_group ? jidStr(sender) : undefined
+							},
+							receipt: { receiptTimestamp: d.timestamp }
+						}
+					])
 				}
+
 				break
 			}
 
@@ -175,6 +178,7 @@ export const makeEventHandler = (ctx: SocketContext) => {
 				if (d.jid) {
 					ev.emit('contacts.update', [{ id: jidStr(d.jid), notify: d.new_push_name }])
 				}
+
 				break
 			}
 
@@ -183,6 +187,7 @@ export const makeEventHandler = (ctx: SocketContext) => {
 				if (d.jid) {
 					ev.emit('contacts.update', [{ id: jidStr(d.jid) }])
 				}
+
 				break
 			}
 
@@ -191,6 +196,7 @@ export const makeEventHandler = (ctx: SocketContext) => {
 				if (d.jid) {
 					ev.emit('contacts.update', [{ id: jidStr(d.jid) }])
 				}
+
 				break
 			}
 
@@ -199,6 +205,7 @@ export const makeEventHandler = (ctx: SocketContext) => {
 				if (d.jid) {
 					ev.emit('contacts.update', [{ id: jidStr(d.jid), imgUrl: 'changed' }])
 				}
+
 				break
 			}
 
@@ -209,6 +216,7 @@ export const makeEventHandler = (ctx: SocketContext) => {
 					creds.me.name = d.new_name
 					ev.emit('creds.update', creds)
 				}
+
 				break
 			}
 
@@ -227,6 +235,7 @@ export const makeEventHandler = (ctx: SocketContext) => {
 						}
 					})
 				}
+
 				break
 			}
 
@@ -244,6 +253,7 @@ export const makeEventHandler = (ctx: SocketContext) => {
 						}
 					})
 				}
+
 				break
 			}
 
@@ -253,6 +263,7 @@ export const makeEventHandler = (ctx: SocketContext) => {
 				if (d.group_jid) {
 					ev.emit('groups.update', [{ id: jidStr(d.group_jid) }] as BaileysEventMap['groups.update'])
 				}
+
 				break
 			}
 
@@ -262,6 +273,7 @@ export const makeEventHandler = (ctx: SocketContext) => {
 				if (d.jid) {
 					ev.emit('chats.update', [{ id: jidStr(d.jid), archived: true }])
 				}
+
 				break
 			}
 
@@ -270,6 +282,7 @@ export const makeEventHandler = (ctx: SocketContext) => {
 				if (d.jid) {
 					ev.emit('chats.update', [{ id: jidStr(d.jid), pinned: d.timestamp || undefined }])
 				}
+
 				break
 			}
 
@@ -278,22 +291,26 @@ export const makeEventHandler = (ctx: SocketContext) => {
 				if (d.jid) {
 					ev.emit('chats.update', [{ id: jidStr(d.jid), muteEndTime: d.timestamp || undefined }])
 				}
+
 				break
 			}
 
 			case 'star_update': {
 				const d = event.data
 				if (d.chat_jid && d.message_id) {
-					ev.emit('messages.update', [{
-						key: {
-							remoteJid: jidStr(d.chat_jid),
-							id: d.message_id,
-							fromMe: d.from_me,
-							participant: d.participant_jid ? jidStr(d.participant_jid) : undefined
-						},
-						update: { starred: !!(d.action as Record<string, unknown>)?.starred }
-					}])
+					ev.emit('messages.update', [
+						{
+							key: {
+								remoteJid: jidStr(d.chat_jid),
+								id: d.message_id,
+								fromMe: d.from_me,
+								participant: d.participant_jid ? jidStr(d.participant_jid) : undefined
+							},
+							update: { starred: !!(d.action as Record<string, unknown>)?.starred }
+						}
+					])
 				}
+
 				break
 			}
 
@@ -302,6 +319,7 @@ export const makeEventHandler = (ctx: SocketContext) => {
 				if (d.jid) {
 					ev.emit('chats.update', [{ id: jidStr(d.jid), unreadCount: 0 }])
 				}
+
 				break
 			}
 

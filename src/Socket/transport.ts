@@ -1,5 +1,5 @@
-import WebSocket from 'ws'
 import type { JsHttpClientConfig, JsTransportCallbacks, JsTransportHandle } from 'whatsapp-rust-bridge'
+import WebSocket from 'ws'
 import type { ILogger } from '../Utils/logger'
 
 interface TransportConfig {
@@ -39,9 +39,10 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 				})
 				newWs.on('message', (data: ArrayBuffer | Buffer) => {
 					if (ws !== newWs) return
-					const arr = data instanceof ArrayBuffer
-						? new Uint8Array(data)
-						: new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+					const arr =
+						data instanceof ArrayBuffer
+							? new Uint8Array(data)
+							: new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
 					handle?.onData(arr)
 				})
 				newWs.on('close', () => {
@@ -65,8 +66,13 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 			if (toClose) {
 				toClose.removeAllListeners()
 				toClose.on('error', () => {})
-				try { toClose.close() } catch { toClose.terminate() }
+				try {
+					toClose.close()
+				} catch {
+					toClose.terminate()
+				}
 			}
+
 			if (toClose === ws) ws = undefined
 			disconnectTarget = undefined
 		}
@@ -77,7 +83,7 @@ export const makeHttpClient = (config: TransportConfig): JsHttpClientConfig => (
 	async execute(url, method, headers, body) {
 		const fetchOpts: RequestInit = { method, headers }
 		if (body) fetchOpts.body = body as unknown as BodyInit
-		if (config.fetchAgent) fetchOpts.dispatcher = config.fetchAgent as unknown as RequestInit['dispatcher']
+		if (config.fetchAgent) fetchOpts.dispatcher = config.fetchAgent as unknown
 
 		const resp = await fetch(url, fetchOpts)
 		const buf = new Uint8Array(await resp.arrayBuffer())

@@ -1,18 +1,27 @@
 import { Boom } from '@hapi/boom'
+import type {
+	AnyMessageContent,
+	BaileysEventMap,
+	MediaConnInfo,
+	MessageGenerationOptions,
+	WAMessage,
+	WAMessageContent
+} from '../Types'
 import { WAProto } from '../Types'
-import type { AnyMessageContent, BaileysEventMap, MediaConnInfo, MessageGenerationOptions, WAMessage, WAMessageContent } from '../Types'
 import { generateWAMessage, getContentType, normalizeMessageContent } from '../Utils/messages'
-import { getWAUploadToServer, setMediaHost, getUrlFromDirectPath } from '../Utils/messages-media'
+import { getUrlFromDirectPath, getWAUploadToServer, setMediaHost } from '../Utils/messages-media'
 import { jidNormalizedUser } from '../WABinary/index'
 import type { SocketContext } from './types'
 
 /** Extract the media content from a WAMessage (image, video, audio, document, sticker) */
 function getMediaContent(content: WAMessageContent | null | undefined) {
-	return content?.imageMessage
-		|| content?.videoMessage
-		|| content?.audioMessage
-		|| content?.documentMessage
-		|| content?.stickerMessage
+	return (
+		content?.imageMessage ||
+		content?.videoMessage ||
+		content?.audioMessage ||
+		content?.documentMessage ||
+		content?.stickerMessage
+	)
 }
 
 export const makeMessageMethods = (ctx: SocketContext) => ({
@@ -49,7 +58,12 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 				await client.revokeMessage(jid, protoMsg.key.id!)
 				return fullMsg
 			}
-			if (protoMsg?.type === WAProto.Message.ProtocolMessage.Type.MESSAGE_EDIT && protoMsg?.key && protoMsg?.editedMessage) {
+
+			if (
+				protoMsg?.type === WAProto.Message.ProtocolMessage.Type.MESSAGE_EDIT &&
+				protoMsg?.key &&
+				protoMsg?.editedMessage
+			) {
 				const editBytes = WAProto.Message.encode(protoMsg.editedMessage).finish()
 				const newMsgId = await client.editMessageBytes(jid, protoMsg.key.id!, editBytes)
 				fullMsg.key.id = newMsgId || fullMsg.key.id
@@ -100,16 +114,20 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 		mediaContent.directPath = newDirectPath
 		mediaContent.url = getUrlFromDirectPath(newDirectPath)
 
-		ctx.logger.debug(
-			{ directPath: newDirectPath, msgId: key.id },
-			'media reupload successful'
-		)
+		ctx.logger.debug({ directPath: newDirectPath, msgId: key.id }, 'media reupload successful')
 
-		ctx.ev.emit('messages.update', [{
-			key: message.key,
-			update: { message: message.message }
-		}])
+		ctx.ev.emit('messages.update', [
+			{
+				key: message.key,
+				update: { message: message.message }
+			}
+		])
 
 		return message
 	},
+
+	readMessages: async (keys: { remoteJid: string; id: string; participant?: string }[]) => {
+		await ctx.ensureInit()
+		await ctx.getClient().readMessages(keys)
+	}
 })

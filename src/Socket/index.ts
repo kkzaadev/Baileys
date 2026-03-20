@@ -1,9 +1,5 @@
 import { Boom } from '@hapi/boom'
-import {
-	createWhatsAppClient,
-	initWasmEngine,
-	type WasmWhatsAppClient,
-} from 'whatsapp-rust-bridge'
+import { createWhatsAppClient, initWasmEngine, type WasmWhatsAppClient } from 'whatsapp-rust-bridge'
 import { DEFAULT_CONNECTION_CONFIG } from '../Defaults/index'
 import type { ConnectionState, UserFacingSocketConfig } from '../Types'
 import { DisconnectReason } from '../Types'
@@ -17,7 +13,7 @@ import { makeMessageMethods } from './messages'
 import { makeNewsletterMethods } from './newsletter'
 import { makePresenceMethods } from './presence'
 import { makeProfileMethods } from './profile'
-import { makeTransport, makeHttpClient } from './transport'
+import { makeHttpClient, makeTransport } from './transport'
 import type { SocketContext } from './types'
 
 let wasmInitialized = false
@@ -26,7 +22,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	const fullConfig = { ...DEFAULT_CONNECTION_CONFIG, ...config }
 	const { auth, logger } = fullConfig
 
-	const ev = makeEventBuffer(logger)
+	const ev = makeEventBuffer()
 	let client: WasmWhatsAppClient | undefined
 	let user: { id?: string; lid?: string } | undefined
 
@@ -36,7 +32,9 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		logger,
 		fullConfig,
 		getUser: () => user,
-		setUser: (u) => { user = u },
+		setUser: u => {
+			user = u
+		},
 		ensureInit: async () => {
 			await initPromise
 			if (initError) {
@@ -70,6 +68,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			makeHttpClient(fullConfig),
 			handleEvent,
 			bridgeStore,
+			fullConfig.cache ?? null
 		)
 
 		// Set device props from Baileys browser config (e.g. Browsers.macOS('Chrome'))
@@ -91,12 +90,21 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	})
 
 	// End/cleanup — guards against double-free
-	const end = async (_error?: Error) => {
+	const end = async () => {
 		const c = client
 		client = undefined // prevent double-free
 		if (c) {
-			try { await c.disconnect() } catch { /* ignore */ }
-			try { c.free() } catch { /* ignore if already freed */ }
+			try {
+				await c.disconnect()
+			} catch {
+				/* ignore */
+			}
+
+			try {
+				c.free()
+			} catch {
+				/* ignore if already freed */
+			}
 		}
 	}
 
@@ -127,6 +135,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 					resolve()
 				}
 			}
+
 			ev.on('connection.update', listener)
 			if (timeoutMs) {
 				timeout = setTimeout(() => {
@@ -140,11 +149,17 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	return {
 		ev,
 		logger,
-		get user() { return user },
+		get user() {
+			return user
+		},
 		/** Whether the WebSocket is currently connected */
-		get isConnected() { return client?.isConnected() ?? false },
+		get isConnected() {
+			return client?.isConnected() ?? false
+		},
 		/** Whether the client has completed pairing */
-		get isLoggedIn() { return client?.isLoggedIn() ?? false },
+		get isLoggedIn() {
+			return client?.isLoggedIn() ?? false
+		},
 		end,
 		logout,
 		waitForConnectionUpdate,
@@ -156,6 +171,70 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		sendPresenceUpdate: (presence: 'available' | 'unavailable') => {
 			return ctx.getClient().sendPresence(presence)
 		},
+		/** Fetch all privacy settings as a key-value map */
+		fetchPrivacySettings: async () => {
+			return ctx.getClient().fetchPrivacySettings()
+		},
+		/** Update last seen privacy */
+		updateLastSeenPrivacy: async (value: string) => {
+			await ctx.getClient().updatePrivacySetting('last', value)
+		},
+		/** Update online privacy */
+		updateOnlinePrivacy: async (value: string) => {
+			await ctx.getClient().updatePrivacySetting('online', value)
+		},
+		/** Update profile picture privacy */
+		updateProfilePicturePrivacy: async (value: string) => {
+			await ctx.getClient().updatePrivacySetting('profile', value)
+		},
+		/** Update status privacy */
+		updateStatusPrivacy: async (value: string) => {
+			await ctx.getClient().updatePrivacySetting('status', value)
+		},
+		/** Update read receipts privacy */
+		updateReadReceiptsPrivacy: async (value: string) => {
+			await ctx.getClient().updatePrivacySetting('readreceipts', value)
+		},
+		/** Update groups add privacy */
+		updateGroupsAddPrivacy: async (value: string) => {
+			await ctx.getClient().updatePrivacySetting('groupadd', value)
+		},
+		/** Update default disappearing messages duration (seconds). 0 to disable. */
+		updateDefaultDisappearingMode: async (duration: number) => {
+			await ctx.getClient().updateDefaultDisappearingMode(duration)
+		},
+		/** Reject an incoming call */
+		rejectCall: async (callId: string, callFrom: string) => {
+			await ctx.getClient().rejectCall(callId, callFrom)
+		},
+		/** Fetch user status/about text */
+		fetchStatus: async (...jids: string[]) => {
+			return ctx.getClient().fetchStatus(jids) as Promise<Array<{ jid: string; status?: string }>>
+		},
+		/** Get business profile for a JID */
+		getBusinessProfile: async (jid: string) => {
+			return ctx.getClient().getBusinessProfile(jid)
+		},
+		/** Request on-demand message history from primary phone */
+		fetchMessageHistory: async (
+			count: number,
+			oldestMsgKey: { remoteJid?: string | null; id?: string | null; fromMe?: boolean | null },
+			oldestMsgTimestamp: number
+		) => {
+			return ctx
+				.getClient()
+				.fetchMessageHistory(
+					count,
+					oldestMsgKey.remoteJid || '',
+					oldestMsgKey.id || '',
+					oldestMsgKey.fromMe || false,
+					oldestMsgTimestamp
+				)
+		},
+		/** Set who can add members to a group */
+		groupMemberAddMode: async (jid: string, mode: 'admin_add' | 'all_member_add') => {
+			await ctx.getClient().groupMemberAddMode(jid, mode)
+		},
 		...makeMessageMethods(ctx),
 		...makeGroupMethods(ctx),
 		...makeContactMethods(ctx),
@@ -163,7 +242,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		...makeChatActionMethods(ctx),
 		...makePresenceMethods(ctx),
 		...makeBlockingMethods(ctx),
-		...makeNewsletterMethods(ctx),
+		...makeNewsletterMethods(ctx)
 	}
 }
 

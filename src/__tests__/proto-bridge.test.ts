@@ -16,7 +16,7 @@ describe('Proto bridge roundtrip', () => {
 		expect(decoded.clientHello).toBeDefined()
 		const eph = decoded.clientHello!.ephemeral!
 		expect(eph.length).toBe(32)
-		expect(Buffer.from(eph as any)).toEqual(Buffer.from(kp.public))
+		expect(Buffer.from(eph)).toEqual(Buffer.from(kp.public))
 	})
 
 	it('should encode/decode CertChain with byte fields as Buffer', () => {
@@ -36,8 +36,8 @@ describe('Proto bridge roundtrip', () => {
 		const d = decoded.intermediate!.details!
 		const s = decoded.intermediate!.signature!
 		expect(Buffer.isBuffer(d) || d instanceof Uint8Array).toBe(true)
-		expect(Buffer.from(d as any)).toEqual(details)
-		expect(Buffer.from(s as any)).toEqual(signature)
+		expect(Buffer.from(d)).toEqual(details)
+		expect(Buffer.from(s)).toEqual(signature)
 	})
 
 	it('Curve.verify should work with 32-byte keys', () => {

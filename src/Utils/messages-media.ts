@@ -9,21 +9,15 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { Readable, Transform } from 'stream'
 import { URL } from 'url'
-import { proto } from '../../WAProto/index.js'
 import { DEFAULT_ORIGIN, MEDIA_HKDF_KEY_MAPPING, MEDIA_PATH_MAP, type MediaType } from '../Defaults'
 import type {
-	BaileysEventMap,
 	DownloadableMessage,
 	MediaConnInfo,
 	MediaDecryptionKeyInfo,
 	SocketConfig,
-	WAGenericMediaMessage,
 	WAMediaUpload,
-	WAMediaUploadFunction,
-	WAMessageContent,
-	WAMessageKey
+	WAMediaUploadFunction
 } from '../Types'
-import { type BinaryNode, getBinaryNodeChild, getBinaryNodeChildBuffer, jidNormalizedUser } from '../WABinary'
 import { hkdf } from './crypto'
 import { generateMessageIDV2 } from './generics'
 import type { ILogger } from './logger'
@@ -152,6 +146,7 @@ export const extractImageThumb = async (bufferOrFilePath: Readable | Buffer | st
 			}
 		}
 	} else if ('jimp' in lib && typeof lib.jimp?.Jimp === 'object') {
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic lib
 		const jimp = await (lib.jimp.Jimp as any).read(bufferOrFilePath)
 		const dimensions = {
 			width: jimp.width,
@@ -325,13 +320,14 @@ export const getHttpStream = async (url: string | URL, options: RequestInit & { 
 	}
 
 	// @ts-ignore Node18+ Readable.fromWeb exists
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Node.js web stream compat
 	return response.body instanceof Readable ? response.body : Readable.fromWeb(response.body as any)
 }
 
 type EncryptedStreamOptions = {
 	saveOriginalFileIfRequired?: boolean
 	logger?: ILogger
-	opts?: RequestInit
+	opts?: RequestInit & { maxContentLength?: number }
 }
 
 export const encryptedStream = async (
@@ -376,11 +372,7 @@ export const encryptedStream = async (
 		for await (const data of stream) {
 			fileLength += data.length
 
-			if (
-				type === 'remote' &&
-				(opts as any)?.maxContentLength &&
-				fileLength + data.length > (opts as any).maxContentLength
-			) {
+			if (type === 'remote' && opts?.maxContentLength && fileLength + data.length > opts.maxContentLength) {
 				throw new Boom(`content length exceeded when encrypting "${type}"`, {
 					data: { media, type }
 				})
@@ -581,16 +573,16 @@ export const downloadEncryptedContent = async (
 			try {
 				pushBytes(aes.update(data), b => this.push(b))
 				callback()
-			} catch (error: any) {
-				callback(error)
+			} catch (error: unknown) {
+				callback(error instanceof Error ? error : new Error(String(error)))
 			}
 		},
 		final(callback) {
 			try {
 				pushBytes(aes.final(), b => this.push(b))
 				callback()
-			} catch (error: any) {
-				callback(error)
+			} catch (error: unknown) {
+				callback(error instanceof Error ? error : new Error(String(error)))
 			}
 		}
 	})
@@ -602,7 +594,7 @@ const isNodeRuntime = (): boolean => {
 		typeof process !== 'undefined' &&
 		process.versions?.node !== null &&
 		typeof process.versions.bun === 'undefined' &&
-		typeof (globalThis as any).Deno === 'undefined'
+		typeof (globalThis as Record<string, unknown>).Deno === 'undefined'
 	)
 }
 
@@ -810,10 +802,10 @@ export const getWAUploadToServer = (
 					uploadInfo = await refreshMediaConn(true)
 					throw new Error(`upload failed, reason: ${JSON.stringify(result)}`)
 				}
-			} catch (error: any) {
+			} catch (error: unknown) {
 				const isLast = hostname === hosts[uploadInfo.hosts.length - 1]?.hostname
 				logger.warn(
-					{ trace: error?.stack, uploadResult: result },
+					{ trace: (error as Error)?.stack, uploadResult: result },
 					`Error in uploading to ${hostname} ${isLast ? '' : ', retrying...'}`
 				)
 			}
@@ -826,4 +818,3 @@ export const getWAUploadToServer = (
 		return urls
 	}
 }
-

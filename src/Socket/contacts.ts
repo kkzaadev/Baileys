@@ -10,6 +10,7 @@ export const makeContactMethods = (ctx: SocketContext) => ({
 				results.push({ exists: entry.isRegistered, jid: entry.jid })
 			}
 		}
+
 		return results
 	},
 
@@ -20,5 +21,5 @@ export const makeContactMethods = (ctx: SocketContext) => ({
 
 	fetchUserInfo: async (...jids: string[]) => {
 		return ctx.getClient().fetchUserInfo(jids)
-	},
+	}
 })

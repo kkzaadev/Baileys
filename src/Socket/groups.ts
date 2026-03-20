@@ -17,7 +17,7 @@ function bridgeGroupToMetadata(g: GroupMetadataResult): GroupMetadata {
 		participants: g.participants.map(p => ({
 			id: p.jid,
 			isAdmin: p.isAdmin,
-			admin: p.isAdmin ? 'admin' as const : null
+			admin: p.isAdmin ? ('admin' as const) : null
 		})),
 		ephemeralDuration: g.ephemeralExpiration,
 		subjectOwner: g.subjectOwner,
@@ -48,7 +48,11 @@ export const makeGroupMethods = (ctx: SocketContext) => ({
 		await ctx.getClient().groupUpdateDescription(jid, description)
 	},
 
-	groupParticipantsUpdate: async (jid: string, participants: string[], action: 'add' | 'remove' | 'promote' | 'demote') => {
+	groupParticipantsUpdate: async (
+		jid: string,
+		participants: string[],
+		action: 'add' | 'remove' | 'promote' | 'demote'
+	) => {
 		return ctx.getClient().groupParticipantsUpdate(jid, participants, action)
 	},
 
@@ -58,6 +62,7 @@ export const makeGroupMethods = (ctx: SocketContext) => ({
 		for (const [groupJid, g] of Object.entries(bridgeGroups)) {
 			result[groupJid] = bridgeGroupToMetadata(g)
 		}
+
 		return result
 	},
 
@@ -76,4 +81,21 @@ export const makeGroupMethods = (ctx: SocketContext) => ({
 	groupToggleEphemeral: async (jid: string, expiration: number) => {
 		await ctx.getClient().groupToggleEphemeral(jid, expiration)
 	},
+
+	groupAcceptInvite: async (code: string): Promise<string | undefined> => {
+		return ctx.getClient().groupAcceptInvite(code)
+	},
+
+	groupGetInviteInfo: async (code: string): Promise<GroupMetadata> => {
+		const g = await ctx.getClient().groupGetInviteInfo(code)
+		return bridgeGroupToMetadata(g)
+	},
+
+	groupRequestParticipantsList: async (jid: string) => {
+		return ctx.getClient().groupRequestParticipantsList(jid)
+	},
+
+	groupRequestParticipantsUpdate: async (jid: string, participants: string[], action: 'approve' | 'reject') => {
+		return ctx.getClient().groupRequestParticipantsUpdate(jid, participants, action)
+	}
 })

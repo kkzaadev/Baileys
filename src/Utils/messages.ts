@@ -38,7 +38,7 @@ import {
 	type MediaDownloadOptions
 } from './messages-media'
 
-type ExtractByKey<T, K extends PropertyKey> = T extends Record<K, any> ? T : never
+type ExtractByKey<T, K extends PropertyKey> = T extends Record<K, unknown> ? T : never
 type RequireKey<T, K extends keyof T> = T & {
 	[P in K]-?: Exclude<T[P], null | undefined>
 }
@@ -95,14 +95,14 @@ export const generateLinkPreviewIfRequired = async (
 		try {
 			const urlInfo = await getUrlInfo(url)
 			return urlInfo
-		} catch (error: any) {
+		} catch (error: unknown) {
 			// ignore if fails
-			logger?.warn({ trace: error.stack }, 'url generation failed')
+			logger?.warn({ trace: (error as Error).stack }, 'url generation failed')
 		}
 	}
 }
 
-const assertColor = async (color: any) => {
+const assertColor = async (color: number | string) => {
 	let assertedColor
 	if (typeof color === 'number') {
 		assertedColor = color > 0 ? color : 0xffffffff + Number(color) + 1
@@ -134,11 +134,12 @@ export const prepareWAMessageMedia = async (
 		throw new Boom('Invalid media type', { statusCode: 400 })
 	}
 
+	const messageRecord = message as Record<string, unknown>
 	const uploadData: MediaUploadData = {
 		...message,
-		media: (message as any)[mediaType]
+		media: messageRecord[mediaType] as WAMediaUpload
 	}
-	delete (uploadData as any)[mediaType]
+	delete (uploadData as Record<string, unknown>)[mediaType]
 	// check if cacheable + generate cache key
 	const cacheableKey =
 		typeof uploadData.media === 'object' &&
@@ -189,6 +190,7 @@ export const prepareWAMessageMedia = async (
 
 		const obj = WAProto.Message.fromObject({
 			// todo: add more support here
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic proto type lookup
 			[`${mediaType}Message`]: (MessageTypeProto as any)[mediaType].fromObject({
 				url: mediaUrl,
 				directPath,
@@ -272,11 +274,11 @@ export const prepareWAMessageMedia = async (
 				}
 
 				if (requiresAudioBackground) {
-					uploadData.backgroundArgb = await assertColor(options.backgroundColor)
+					uploadData.backgroundArgb = await assertColor(options.backgroundColor!)
 					logger?.debug('computed backgroundColor audio status')
 				}
 			} catch (error) {
-				logger?.warn({ trace: (error as any).stack }, 'failed to obtain extra info')
+				logger?.warn({ trace: (error as Error).stack }, 'failed to obtain extra info')
 			}
 		})()
 	]).finally(async () => {
@@ -303,7 +305,7 @@ export const prepareWAMessageMedia = async (
 			mediaKeyTimestamp: unixTimestampSeconds(),
 			...uploadData,
 			media: undefined
-		} as any)
+		} as Record<string, unknown>)
 	})
 
 	if (uploadData.ptv) {
@@ -377,13 +379,13 @@ export const hasNonNullishProperty = <K extends PropertyKey>(
 		typeof message === 'object' &&
 		message !== null &&
 		key in message &&
-		(message as any)[key] !== null &&
-		(message as any)[key] !== undefined
+		(message as Record<PropertyKey, unknown>)[key] !== null &&
+		(message as Record<PropertyKey, unknown>)[key] !== undefined
 	)
 }
 
 function hasOptionalProperty<T, K extends PropertyKey>(obj: T, key: K): obj is WithKey<T, K> {
-	return typeof obj === 'object' && obj !== null && key in obj && (obj as any)[key] !== null
+	return typeof obj === 'object' && obj !== null && key in obj && (obj as Record<PropertyKey, unknown>)[key] !== null
 }
 
 export const generateWAMessageContent = async (
@@ -713,7 +715,7 @@ export const generateWAMessageFromContent = (
 	) {
 		/* @ts-ignore */
 		innerMessage[key].contextInfo = {
-			...((innerMessage[key] as any).contextInfo || {}),
+			...(((innerMessage[key] as Record<string, unknown>).contextInfo as Record<string, unknown>) || {}),
 			expiration: options.ephemeralExpiration || WA_DEFAULT_EPHEMERAL
 			//ephemeralSettingTimestamp: options.ephemeralOptions.eph_setting_ts?.toString()
 		}

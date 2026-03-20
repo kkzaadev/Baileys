@@ -4,8 +4,8 @@ import { join } from 'path'
 import { proto } from '../../WAProto/index.js'
 import type { AuthenticationCreds, AuthenticationState, SignalDataTypeMap } from '../Types'
 import { initAuthCreds } from './auth-utils'
-import { useBridgeStore } from './use-bridge-store'
 import { BufferJSON } from './generics'
+import { useBridgeStore } from './use-bridge-store'
 
 // We need to lock files due to the fact that we are using async functions to read and write files
 // https://github.com/WhiskeySockets/Baileys/issues/794

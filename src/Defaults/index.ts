@@ -38,7 +38,7 @@ export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
 	linkPreviewImageThumbnailWidth: 192,
 	transactionOpts: { maxCommitRetries: 10, delayBetweenTriesMs: 3000 },
 	generateHighQualityLinkPreview: false,
-	options: {},
+	options: {}
 }
 
 export const MEDIA_PATH_MAP: { [T in MediaType]?: string } = {
