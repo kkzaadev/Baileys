@@ -288,10 +288,7 @@ const processMessage = async (
 					const data = await downloadAndProcessHistorySyncNotification(histNotification, options, logger)
 
 					if (data.lidPnMappings?.length) {
-						logger?.debug({ count: data.lidPnMappings.length }, 'processing LID-PN mappings from history sync')
-						await signalRepository.lidMapping
-							.storeLIDPNMappings(data.lidPnMappings)
-							.catch((err: unknown) => logger?.warn({ err }, 'failed to store LID-PN mappings from history sync'))
+						logger?.debug({ count: data.lidPnMappings.length }, 'LID-PN mappings from history sync (handled by bridge)')
 					}
 
 					ev.emit('messaging-history.set', {
@@ -438,12 +435,7 @@ const processMessage = async (
 					pairs.push({ lid: `${lid}@lid`, pn: `${pn}@s.whatsapp.net` })
 				}
 
-				await signalRepository.lidMapping.storeLIDPNMappings(pairs)
-				if (pairs.length) {
-					for (const { pn, lid } of pairs) {
-						await signalRepository.migrateSession(pn, lid)
-					}
-				}
+				logger?.debug({ pairs: pairs.length }, 'LID migration mapping sync (handled by bridge)')
 		}
 	} else if (content?.reactionMessage) {
 		const reaction: proto.IReaction = {
@@ -468,9 +460,7 @@ const processMessage = async (
 
 				// all jids need to be PN
 				const eventCreatorKey = creationMsgKey.participant || creationMsgKey.remoteJid!
-				const eventCreatorPn = isLidUser(eventCreatorKey)
-					? await signalRepository.lidMapping.getPNForLID(eventCreatorKey)
-					: eventCreatorKey
+				const eventCreatorPn = eventCreatorKey
 				const eventCreatorJid = getKeyAuthor(
 					{ remoteJid: jidNormalizedUser(eventCreatorPn!), fromMe: meIdNormalised === eventCreatorPn },
 					meIdNormalised

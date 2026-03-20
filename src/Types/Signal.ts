@@ -1,5 +1,4 @@
 import { proto } from '../../WAProto/index.js'
-import type { LIDMappingStore } from '../Signal/lid-mapping'
 
 type DecryptGroupSignalOpts = {
 	group: string
@@ -66,11 +65,7 @@ export type SignalRepository = {
 	validateSession(jid: string): Promise<{ exists: boolean; reason?: string }>
 	jidToSignalProtocolAddress(jid: string): string
 	migrateSession(fromJid: string, toJid: string): Promise<{ migrated: number; skipped: number; total: number }>
-	validateSession(jid: string): Promise<{ exists: boolean; reason?: string }>
 	deleteSession(jids: string[]): Promise<void>
 }
 
-// Optimized repository with pre-loaded LID mapping store
-export interface SignalRepositoryWithLIDStore extends SignalRepository {
-	lidMapping: LIDMappingStore
-}
+export type SignalRepositoryWithLIDStore = SignalRepository
