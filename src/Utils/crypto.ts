@@ -12,7 +12,7 @@ import type { KeyPair } from '../Types'
 export { md5, hkdf }
 
 /** prefix version byte to the pub keys, required for some curve crypto functions */
-export const generateSignalPubKey = (pubKey: Uint8Array | Buffer) =>
+const generateSignalPubKey = (pubKey: Uint8Array | Buffer) =>
 	pubKey.length === 33 ? pubKey : Buffer.concat([KEY_BUNDLE_TYPE, pubKey])
 
 export const Curve = {

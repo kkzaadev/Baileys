@@ -1,10 +1,8 @@
 import { Boom } from '@hapi/boom'
-import WebSocket from 'ws'
-import { proto } from '../../WAProto/index.js'
 import {
 	createWhatsAppClient,
-	initWasmEngine,
 	type GroupMetadataResult as BridgeGroupMetadataResult,
+	initWasmEngine,
 	type JsHttpClientConfig,
 	type JsTransportCallbacks,
 	type JsTransportHandle,
@@ -12,11 +10,12 @@ import {
 	type WasmWhatsAppClient,
 	type WhatsAppEvent
 } from 'whatsapp-rust-bridge'
+import WebSocket from 'ws'
+import { proto } from '../../WAProto/index.js'
 import { DEFAULT_CONNECTION_CONFIG } from '../Defaults/index'
 import type {
 	AnyMessageContent,
 	AuthenticationCreds,
-	BaileysEventEmitter,
 	BaileysEventMap,
 	ConnectionState,
 	GroupMetadata,
@@ -82,9 +81,10 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 						if (ws !== newWs) return
 						// binaryType='arraybuffer' → data is ArrayBuffer, wrap as view (no copy)
 						// If Buffer (shouldn't happen), use subarray to avoid slice copy
-						const arr = data instanceof ArrayBuffer
-							? new Uint8Array(data)
-							: new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+						const arr =
+							data instanceof ArrayBuffer
+								? new Uint8Array(data)
+								: new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
 						handle?.onData(arr)
 					})
 					newWs.on('close', () => {
@@ -110,11 +110,17 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 				if (toClose) {
 					toClose.removeAllListeners()
 					toClose.on('error', () => {})
-					try { toClose.close() } catch { toClose.terminate() }
+					try {
+						toClose.close()
+					} catch {
+						toClose.terminate()
+					}
 				}
+
 				if (toClose === ws) {
 					ws = undefined
 				}
+
 				disconnectTarget = undefined
 			}
 		}
@@ -127,6 +133,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			if (body) {
 				fetchOpts.body = body as unknown as BodyInit
 			}
+
 			if (fetchAgent) {
 				fetchOpts.dispatcher = fetchAgent as unknown as RequestInit['dispatcher']
 			}
@@ -190,6 +197,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 				ev.emit('creds.update', credsUpdate)
 				break
 			}
+
 			case 'logged_out':
 				ev.emit('connection.update', {
 					connection: 'close',
@@ -208,6 +216,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 				} as BaileysEventMap['messages.upsert'])
 				break
 			}
+
 			case 'connect_failure':
 				ev.emit('connection.update', {
 					connection: 'close',
@@ -364,6 +373,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			} catch {
 				// ignore disconnect errors
 			}
+
 			client.free()
 			client = undefined
 		}
@@ -397,7 +407,7 @@ function bridgeGroupToMetadata(g: BridgeGroupMetadataResult): GroupMetadata {
 		participants: g.participants.map(p => ({
 			id: p.jid,
 			isAdmin: p.isAdmin,
-			admin: p.isAdmin ? 'admin' as const : null
+			admin: p.isAdmin ? ('admin' as const) : null
 		})),
 		ephemeralDuration: g.ephemeralExpiration,
 		subjectOwner: g.subjectOwner,

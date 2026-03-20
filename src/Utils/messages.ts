@@ -22,7 +22,6 @@ import type {
 	WAMediaUpload,
 	WAMessage,
 	WAMessageContent,
-	WAMessageKey,
 	WATextMessage
 } from '../Types'
 import { WAMessageStatus, WAProto } from '../Types'
@@ -835,7 +834,6 @@ export const extractMessageContent = (content: WAMessageContent | undefined | nu
 
 	return content
 }
-
 
 type DownloadMediaMessageContext = {
 	reuploadRequest: (msg: WAMessage) => Promise<WAMessage>

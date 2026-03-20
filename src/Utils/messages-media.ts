@@ -16,7 +16,6 @@ import type {
 	DownloadableMessage,
 	MediaConnInfo,
 	MediaDecryptionKeyInfo,
-	MessageType,
 	SocketConfig,
 	WAGenericMediaMessage,
 	WAMediaUpload,
