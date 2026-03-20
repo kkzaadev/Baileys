@@ -114,6 +114,7 @@ export type SocketConfig = {
 	shouldIgnoreJid: (jid: string) => boolean | undefined
 
 	/**
+	/**
 	 * Optionally patch the message before sending out
 	 * */
 	patchMessageBeforeSending: (

@@ -1,7 +1,7 @@
 import { Boom } from '@hapi/boom'
 import NodeCache from '@cacheable/node-cache'
 import readline from 'readline'
-import makeWASocket, { CacheStore, DEFAULT_CONNECTION_CONFIG, DisconnectReason, fetchLatestBaileysVersion, generateMessageIDV2, getAggregateVotesInPollMessage, isJidNewsletter, makeCacheableSignalKeyStore, proto, useMultiFileAuthState, WAMessageContent, WAMessageKey } from '../src'
+import makeWASocket, { CacheStore, DEFAULT_CONNECTION_CONFIG, DisconnectReason, fetchLatestWaWebVersion, generateMessageIDV2, isJidNewsletter, proto, useMultiFileAuthState, WAMessageContent, WAMessageKey } from '../src'
 import P from 'pino'
 
 const logger = P({
@@ -44,18 +44,14 @@ const startSock = async() => {
 		state.creds.advSecretKey = process.env.ADV_SECRET_KEY
 	}
 	// fetch latest version of WA Web
-	const { version, isLatest } = await fetchLatestBaileysVersion()
+	const { version, isLatest } = await fetchLatestWaWebVersion()
 	logger.debug({version: version.join('.'), isLatest}, `using latest WA version`)
 
 	const sock = makeWASocket({
 		version,
 		logger,
 		waWebSocketUrl: process.env.SOCKET_URL ?? DEFAULT_CONNECTION_CONFIG.waWebSocketUrl,
-		auth: {
-			creds: state.creds,
-			/** caching makes the store faster to send/recv messages */
-			keys: makeCacheableSignalKeyStore(state.keys, logger),
-		},
+		auth: state, // includes creds, keys, and bridge store for persistence
 		msgRetryCounterCache,
 		generateHighQualityLinkPreview: true,
 		// ignore all broadcast messages -- to receive the same
@@ -76,12 +72,12 @@ const startSock = async() => {
 				const update = events['connection.update']
 				const { connection, lastDisconnect, qr } = update
 				if(connection === 'close') {
-					// reconnect if not logged out
-					if((lastDisconnect?.error as Boom)?.output?.statusCode !== DisconnectReason.loggedOut) {
-						startSock()
-					} else {
+					const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode
+					if(statusCode === DisconnectReason.loggedOut) {
 						logger.fatal('Connection closed. You are logged out.')
 					}
+					// Other disconnects are handled automatically by the Rust engine
+					// (auto-reconnect with fibonacci backoff). No need to call startSock().
 				}
 
 				if (qr) {
@@ -150,7 +146,7 @@ const startSock = async() => {
                 logger.debug({ id: messageId }, 'requested on-demand history resync')
               }
 
-              if (!msg.key.fromMe && doReplies && !isJidNewsletter(msg.key?.remoteJid!)) {
+              if (text === "ping") {
               	const id = generateMessageIDV2(sock.user?.id)
               	logger.debug({id, orig_id: msg.key.id }, 'replying to message')
                 await sock.sendMessage(msg.key.remoteJid!, { text: 'pong '+msg.key.id }, {messageId: id })
@@ -166,16 +162,7 @@ const startSock = async() => {
 
 				for(const { key, update } of events['messages.update']) {
 					if(update.pollUpdates) {
-						const pollCreation: proto.IMessage = {} // get the poll creation message somehow
-						if(pollCreation) {
-							console.log(
-								'got poll update, aggregation: ',
-								getAggregateVotesInPollMessage({
-									message: pollCreation,
-									pollUpdates: update.pollUpdates,
-								})
-							)
-						}
+						logger.debug({ pollUpdates: update.pollUpdates }, 'got poll update')
 					}
 				}
 			}

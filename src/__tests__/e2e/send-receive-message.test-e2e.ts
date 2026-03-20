@@ -8,7 +8,6 @@ import makeWASocket, {
 	downloadContentFromMessage,
 	downloadMediaMessage,
 	jidNormalizedUser,
-	makeCacheableSignalKeyStore,
 	proto,
 	toBuffer,
 	useMultiFileAuthState,
@@ -37,7 +36,7 @@ describe('E2E Tests', () => {
 			sock = makeWASocket({
 				auth: {
 					creds: state.creds,
-					keys: makeCacheableSignalKeyStore(state.keys, logger)
+					keys: state.keys,
 				},
 				waWebSocketUrl: process.env.SOCKET_URL ?? 'wss://127.0.0.1:8080/ws/chat',
 				logger,

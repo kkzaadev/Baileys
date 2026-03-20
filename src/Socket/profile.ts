@@ -22,7 +22,8 @@ export const makeProfileMethods = (ctx: SocketContext) => ({
 		return ctx.getClient().getLid()
 	},
 
-	updateProfilePicture: async (jid: string, imgData: Uint8Array) => {
+	updateProfilePicture: async (_jid: string, imgData: Uint8Array) => {
+		// Note: bridge updates the current user's picture regardless of jid
 		return ctx.getClient().updateProfilePicture(imgData)
 	},
 

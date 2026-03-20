@@ -12,9 +12,7 @@ export const makeEventBuffer = (_logger?: ILogger): BaileysEventEmitter => {
 
 	const emitter = ev as unknown as BaileysEventEmitter
 
-	// process() registers a handler that receives each event as a single-key object.
-	// This matches the Baileys API where ev.process gets a batch of events.
-	emitter.process = handler => {
+	emitter.process = (handler) => {
 		const EVENTS: (keyof BaileysEventMap)[] = [
 			'connection.update',
 			'creds.update',

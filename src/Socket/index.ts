@@ -6,6 +6,7 @@ import {
 } from 'whatsapp-rust-bridge'
 import { DEFAULT_CONNECTION_CONFIG } from '../Defaults/index'
 import type { ConnectionState, UserFacingSocketConfig } from '../Types'
+import { DisconnectReason } from '../Types'
 import { makeEventBuffer } from '../Utils/event-buffer'
 import { makeBlockingMethods } from './blocking'
 import { makeChatActionMethods } from './chat-actions'
@@ -53,7 +54,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	// Initialize bridge client
 	const init = async () => {
 		if (!wasmInitialized) {
-			initWasmEngine()
+			initWasmEngine(logger)
 			wasmInitialized = true
 		}
 
@@ -63,11 +64,22 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			user = { id: auth.creds.me.id, lid: auth.creds.me.lid }
 		}
 
+		const bridgeStore = auth.store ?? null
 		client = await createWhatsAppClient(
 			makeTransport(fullConfig),
 			makeHttpClient(fullConfig),
-			handleEvent
+			handleEvent,
+			bridgeStore,
 		)
+
+		// Set device props from Baileys browser config (e.g. Browsers.macOS('Chrome'))
+		// browser is [osName, browserName, osVersion]
+		const [osName, browserName] = fullConfig.browser
+		await client.setDeviceProps(osName, browserName)
+
+		// Pass user-configured WA version to bridge
+		const [major, minor, patch] = fullConfig.version
+		client.setVersion(major, minor, patch)
 
 		client.run()
 	}
@@ -78,20 +90,72 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		logger.error({ err }, 'failed to initialize bridge client')
 	})
 
-	// End/cleanup
+	// End/cleanup — guards against double-free
 	const end = async (_error?: Error) => {
-		if (client) {
-			try { await client.disconnect() } catch { /* ignore */ }
-			client.free()
-			client = undefined
+		const c = client
+		client = undefined // prevent double-free
+		if (c) {
+			try { await c.disconnect() } catch { /* ignore */ }
+			try { c.free() } catch { /* ignore if already freed */ }
 		}
+	}
+
+	// Logout — disconnect, clear creds, and emit loggedOut
+	const logout = async (msg?: string) => {
+		const creds = auth.creds
+		creds.me = undefined
+		creds.registered = false
+		ev.emit('creds.update', creds)
+		ev.emit('connection.update', {
+			connection: 'close',
+			lastDisconnect: {
+				error: new Boom(msg || 'Logged out', { statusCode: DisconnectReason.loggedOut }),
+				date: new Date()
+			}
+		} as Partial<ConnectionState>)
+		await end()
+	}
+
+	// Wait for a specific connection state
+	const waitForConnectionUpdate = (check: (update: Partial<ConnectionState>) => boolean, timeoutMs?: number) => {
+		return new Promise<void>((resolve, reject) => {
+			let timeout: NodeJS.Timeout | undefined
+			const listener = (update: Partial<ConnectionState>) => {
+				if (check(update)) {
+					ev.off('connection.update', listener)
+					if (timeout) clearTimeout(timeout)
+					resolve()
+				}
+			}
+			ev.on('connection.update', listener)
+			if (timeoutMs) {
+				timeout = setTimeout(() => {
+					ev.off('connection.update', listener)
+					reject(new Boom('Timed out waiting for connection update', { statusCode: 408 }))
+				}, timeoutMs)
+			}
+		})
 	}
 
 	return {
 		ev,
 		logger,
 		get user() { return user },
+		/** Whether the WebSocket is currently connected */
+		get isConnected() { return client?.isConnected() ?? false },
+		/** Whether the client has completed pairing */
+		get isLoggedIn() { return client?.isLoggedIn() ?? false },
 		end,
+		logout,
+		waitForConnectionUpdate,
+		/** Enable or disable automatic reconnection (enabled by default) */
+		setAutoReconnect: (enabled: boolean) => {
+			client?.setAutoReconnect(enabled)
+		},
+		/** Alias for sendPresence (original Baileys compat) */
+		sendPresenceUpdate: (presence: 'available' | 'unavailable') => {
+			return ctx.getClient().sendPresence(presence)
+		},
 		...makeMessageMethods(ctx),
 		...makeGroupMethods(ctx),
 		...makeContactMethods(ctx),

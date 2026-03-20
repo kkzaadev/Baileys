@@ -1,10 +1,19 @@
 import { Boom } from '@hapi/boom'
 import { WAProto } from '../Types'
-import type { AnyMessageContent, BaileysEventMap, MediaConnInfo, MessageGenerationOptions, WAMessage } from '../Types'
+import type { AnyMessageContent, BaileysEventMap, MediaConnInfo, MessageGenerationOptions, WAMessage, WAMessageContent } from '../Types'
 import { generateWAMessage, getContentType, normalizeMessageContent } from '../Utils/messages'
-import { getWAUploadToServer, setMediaHost } from '../Utils/messages-media'
+import { getWAUploadToServer, setMediaHost, getUrlFromDirectPath } from '../Utils/messages-media'
 import { jidNormalizedUser } from '../WABinary/index'
 import type { SocketContext } from './types'
+
+/** Extract the media content from a WAMessage (image, video, audio, document, sticker) */
+function getMediaContent(content: WAMessageContent | null | undefined) {
+	return content?.imageMessage
+		|| content?.videoMessage
+		|| content?.audioMessage
+		|| content?.documentMessage
+		|| content?.stickerMessage
+}
 
 export const makeMessageMethods = (ctx: SocketContext) => ({
 	sendMessage: async (
@@ -48,8 +57,11 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 			}
 		}
 
-		const protoBytes = WAProto.Message.encode(msg).finish()
-		const msgId = await client.sendMessageBytes(jid, protoBytes)
+		// Send via bridge — use serde path with snake_case conversion in Rust.
+		// Strip messageContextInfo as it's handled internally by the bridge.
+		const cleanMsg = { ...msg } as Record<string, unknown>
+		delete cleanMsg.messageContextInfo
+		const msgId = await client.sendMessage(jid, cleanMsg)
 		fullMsg.key.id = msgId || fullMsg.key.id
 
 		ctx.ev.emit('messages.upsert', {
@@ -60,5 +72,44 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 		return fullMsg
 	},
 
-	updateMediaMessage: async (msg: WAMessage): Promise<WAMessage> => msg,
+	updateMediaMessage: async (message: WAMessage): Promise<WAMessage> => {
+		await ctx.ensureInit()
+		const client = ctx.getClient()
+
+		const content = normalizeMessageContent(message.message)
+		const mediaContent = getMediaContent(content)
+		if (!mediaContent) {
+			throw new Boom('Not a media message', { statusCode: 400 })
+		}
+
+		const mediaKey = mediaContent.mediaKey
+		if (!mediaKey) {
+			throw new Boom('Message has no media key', { statusCode: 400 })
+		}
+
+		const key = message.key
+		const newDirectPath = await client.requestMediaReupload(
+			key.id!,
+			key.remoteJid!,
+			mediaKey instanceof Uint8Array ? mediaKey : new Uint8Array(mediaKey),
+			!!key.fromMe,
+			key.participant ?? null
+		)
+
+		// Update the message with the new URL
+		mediaContent.directPath = newDirectPath
+		mediaContent.url = getUrlFromDirectPath(newDirectPath)
+
+		ctx.logger.debug(
+			{ directPath: newDirectPath, msgId: key.id },
+			'media reupload successful'
+		)
+
+		ctx.ev.emit('messages.update', [{
+			key: message.key,
+			update: { message: message.message }
+		}])
+
+		return message
+	},
 })

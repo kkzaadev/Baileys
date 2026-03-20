@@ -113,4 +113,6 @@ export type SignalAuthState = {
 export type AuthenticationState = {
 	creds: AuthenticationCreds
 	keys: SignalKeyStore
+	/** Bridge storage for persistent WASM state. Auto-created by useMultiFileAuthState. */
+	store?: import('whatsapp-rust-bridge').JsStoreCallbacks
 }

@@ -3,7 +3,7 @@ import type { GroupMetadata } from '../Types'
 import type { SocketContext } from './types'
 
 /** Convert bridge GroupMetadataResult to Baileys GroupMetadata */
-export function bridgeGroupToMetadata(g: GroupMetadataResult): GroupMetadata {
+function bridgeGroupToMetadata(g: GroupMetadataResult): GroupMetadata {
 	return {
 		id: g.id,
 		subject: g.subject,
@@ -33,8 +33,7 @@ export const makeGroupMethods = (ctx: SocketContext) => ({
 	},
 
 	groupCreate: async (subject: string, participants: string[]) => {
-		const result = await ctx.getClient().createGroup(subject, participants)
-		return result
+		return ctx.getClient().createGroup(subject, participants)
 	},
 
 	groupLeave: async (jid: string) => {
@@ -66,7 +65,15 @@ export const makeGroupMethods = (ctx: SocketContext) => ({
 		return ctx.getClient().groupInviteCode(jid)
 	},
 
+	groupRevokeInvite: async (jid: string): Promise<string> => {
+		return ctx.getClient().groupRevokeInvite(jid)
+	},
+
 	groupSettingUpdate: async (jid: string, setting: 'locked' | 'announce' | 'membership_approval', value: boolean) => {
 		await ctx.getClient().groupSettingUpdate(jid, setting, value)
+	},
+
+	groupToggleEphemeral: async (jid: string, expiration: number) => {
+		await ctx.getClient().groupToggleEphemeral(jid, expiration)
 	},
 })

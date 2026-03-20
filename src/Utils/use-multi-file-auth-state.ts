@@ -4,6 +4,7 @@ import { join } from 'path'
 import { proto } from '../../WAProto/index.js'
 import type { AuthenticationCreds, AuthenticationState, SignalDataTypeMap } from '../Types'
 import { initAuthCreds } from './auth-utils'
+import { useBridgeStore } from './use-bridge-store'
 import { BufferJSON } from './generics'
 
 // We need to lock files due to the fact that we are using async functions to read and write files
@@ -95,10 +96,12 @@ export const useMultiFileAuthState = async (
 	const fixFileName = (file?: string) => file?.replace(/\//g, '__')?.replace(/:/g, '-')
 
 	const creds: AuthenticationCreds = (await readData('creds.json')) || initAuthCreds()
+	const store = await useBridgeStore(folder)
 
 	return {
 		state: {
 			creds,
+			store,
 			keys: {
 				get: async (type, ids) => {
 					const data: { [_: string]: SignalDataTypeMap[typeof type] } = {}
