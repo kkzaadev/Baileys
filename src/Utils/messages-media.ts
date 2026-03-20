@@ -173,48 +173,6 @@ export const extractImageThumb = async (bufferOrFilePath: Readable | Buffer | st
 export const encodeBase64EncodedStringForUpload = (b64: string) =>
 	encodeURIComponent(b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/\=+$/, ''))
 
-export const generateProfilePicture = async (
-	mediaUpload: WAMediaUpload,
-	dimensions?: { width: number; height: number }
-) => {
-	let buffer: Buffer
-
-	const { width: w = 640, height: h = 640 } = dimensions || {}
-
-	if (Buffer.isBuffer(mediaUpload)) {
-		buffer = mediaUpload
-	} else {
-		// Use getStream to handle all WAMediaUpload types (Buffer, Stream, URL)
-		const { stream } = await getStream(mediaUpload)
-		// Convert the resulting stream to a buffer
-		buffer = await toBuffer(stream)
-	}
-
-	const lib = await getImageProcessingLibrary()
-	let img: Promise<Buffer>
-	if ('sharp' in lib && typeof lib.sharp?.default === 'function') {
-		img = lib.sharp
-			.default(buffer)
-			.resize(w, h)
-			.jpeg({
-				quality: 50
-			})
-			.toBuffer()
-	} else if ('jimp' in lib && typeof lib.jimp?.Jimp === 'function') {
-		const jimp = await (lib.jimp.Jimp as any).read(buffer)
-		const min = Math.min(jimp.width, jimp.height)
-		const cropped = jimp.crop({ x: 0, y: 0, w: min, h: min })
-
-		img = cropped.resize({ w, h, mode: lib.jimp.ResizeStrategy.BILINEAR }).getBuffer('image/jpeg', { quality: 50 })
-	} else {
-		throw new Boom('No image processing library available')
-	}
-
-	return {
-		img: await img
-	}
-}
-
 /** gets the SHA256 of the given media message */
 export const mediaMessageSHA256B64 = (message: WAMessageContent) => {
 	const media = Object.values(message)[0] as WAGenericMediaMessage
@@ -645,20 +603,6 @@ export const downloadEncryptedContent = async (
 		}
 	})
 	return fetched.pipe(output, { end: true })
-}
-
-export function extensionForMediaMessage(message: WAMessageContent) {
-	const getExtension = (mimetype: string) => mimetype.split(';')[0]?.split('/')[1]
-	const type = Object.keys(message)[0] as Exclude<MessageType, 'toJSON'>
-	let extension: string
-	if (type === 'locationMessage' || type === 'liveLocationMessage' || type === 'productMessage') {
-		extension = '.jpeg'
-	} else {
-		const messageContent = message[type] as WAGenericMediaMessage
-		extension = getExtension(messageContent.mimetype!)!
-	}
-
-	return extension
 }
 
 const isNodeRuntime = (): boolean => {

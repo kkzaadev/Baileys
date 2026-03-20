@@ -1,39 +1,17 @@
 import { Boom } from '@hapi/boom'
+import WebSocket from 'ws'
+import { proto } from '../../WAProto/index.js'
 import {
 	createWhatsAppClient,
 	initWasmEngine,
+	type GroupMetadataResult as BridgeGroupMetadataResult,
 	type JsHttpClientConfig,
 	type JsTransportCallbacks,
 	type JsTransportHandle,
+	type MessageInfo,
 	type WasmWhatsAppClient,
 	type WhatsAppEvent
 } from 'whatsapp-rust-bridge'
-import type { MessageInfo } from 'whatsapp-rust-bridge/types'
-import WebSocket from 'ws'
-import { proto } from '../../WAProto/index.js'
-
-/** Inline type matching whatsapp-rust-bridge BridgeGroupMetadataResult */
-interface BridgeGroupMetadataResult {
-	id: string
-	subject: string
-	participants: Array<{ jid: string; phoneNumber?: string; isAdmin: boolean }>
-	addressingMode: string
-	creator?: string
-	creationTime?: number
-	subjectTime?: number
-	subjectOwner?: string
-	description?: string
-	descriptionId?: string
-	isLocked: boolean
-	isAnnouncement: boolean
-	ephemeralExpiration: number
-	membershipApproval: boolean
-	size?: number
-	isParentGroup: boolean
-	parentGroupJid?: string
-	isDefaultSubGroup: boolean
-	isGeneralChat: boolean
-}
 import { DEFAULT_CONNECTION_CONFIG } from '../Defaults/index'
 import type {
 	AnyMessageContent,
@@ -61,7 +39,6 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 
 	const ev = makeEventBuffer(logger)
 	let client: WasmWhatsAppClient | undefined
-	let ws: WebSocket | undefined
 	let user: { id?: string; lid?: string } | undefined
 
 	// ── Transport adapter ──
@@ -103,9 +80,11 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 					})
 					newWs.on('message', (data: ArrayBuffer | Buffer) => {
 						if (ws !== newWs) return
-						const arr = new Uint8Array(
-							data instanceof ArrayBuffer ? data : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)
-						)
+						// binaryType='arraybuffer' → data is ArrayBuffer, wrap as view (no copy)
+						// If Buffer (shouldn't happen), use subarray to avoid slice copy
+						const arr = data instanceof ArrayBuffer
+							? new Uint8Array(data)
+							: new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
 						handle?.onData(arr)
 					})
 					newWs.on('close', () => {
@@ -144,14 +123,10 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	// ── HTTP adapter ──
 	const makeHttpClient = (): JsHttpClientConfig => ({
 		async execute(url, method, headers, body) {
-			const fetchOpts: RequestInit = {
-				method,
-				headers
-			}
+			const fetchOpts: RequestInit = { method, headers }
 			if (body) {
 				fetchOpts.body = body as unknown as BodyInit
 			}
-
 			if (fetchAgent) {
 				fetchOpts.dispatcher = fetchAgent as unknown as RequestInit['dispatcher']
 			}
@@ -167,9 +142,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 
 	// ── Convert bridge message to WAMessage ──
 	const bridgeMessageToWAMessage = (msgData: Record<string, unknown>, info: MessageInfo): WAMessage => {
-		// The bridge delivers decoded protobuf as a JS object
 		const message = msgData as unknown as proto.IMessage
-
 		const isFromMe = info.source.is_from_me
 		const remoteJid = jidStr(info.source.chat)
 		const participant = info.source.is_group ? jidStr(info.source.sender) : undefined
@@ -217,7 +190,6 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 				ev.emit('creds.update', credsUpdate)
 				break
 			}
-
 			case 'logged_out':
 				ev.emit('connection.update', {
 					connection: 'close',
@@ -236,7 +208,6 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 				} as BaileysEventMap['messages.upsert'])
 				break
 			}
-
 			case 'connect_failure':
 				ev.emit('connection.update', {
 					connection: 'close',
@@ -260,7 +231,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 				} as Partial<ConnectionState>)
 				break
 			default:
-				logger.debug({ eventType: (event as WhatsAppEvent).type }, 'unhandled bridge event')
+				logger.debug({ eventType: event.type }, 'unhandled bridge event')
 		}
 	}
 
@@ -284,10 +255,19 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		client.run()
 	}
 
-	// Fire init immediately
+	// Fire init immediately — store error so subsequent awaits get it too
+	let initError: Error | undefined
 	const initPromise = init().catch(err => {
+		initError = err instanceof Error ? err : new Error(String(err))
 		logger.error({ err }, 'failed to initialize bridge client')
 	})
+
+	const ensureInit = async () => {
+		await initPromise
+		if (initError) {
+			throw new Boom('Bridge client failed to initialize: ' + initError.message, { statusCode: 500 })
+		}
+	}
 
 	// ── sendMessage ──
 	const sendMessage = async (
@@ -295,7 +275,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		content: AnyMessageContent,
 		options?: Omit<MessageGenerationOptions, 'upload' | 'logger' | 'userJid' | 'mediaInNote' | 'statusJidList'>
 	): Promise<WAMessage | undefined> => {
-		await initPromise
+		await ensureInit()
 
 		const userJid = user?.id ? jidNormalizedUser(user.id) : ''
 
@@ -330,7 +310,6 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		if (contentType === 'protocolMessage') {
 			const protoMsg = msg.protocolMessage
 			if (protoMsg?.type === WAProto.Message.ProtocolMessage.Type.REVOKE && protoMsg?.key) {
-				// Delete message
 				await client.revokeMessage(jid, protoMsg.key.id!)
 				return fullMsg
 			}
@@ -340,7 +319,6 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 				protoMsg?.key &&
 				protoMsg?.editedMessage
 			) {
-				// Edit message — encode to protobuf bytes to avoid serde issues
 				const editBytes = WAProto.Message.encode(protoMsg.editedMessage).finish()
 				const newMsgId = await client.editMessageBytes(jid, protoMsg.key.id!, editBytes)
 				fullMsg.key.id = newMsgId || fullMsg.key.id
@@ -348,14 +326,12 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			}
 		}
 
-		// Encode to protobuf binary then pass to bridge — this avoids serde issues
-		// with missing required fields in nested prost structs
+		// Encode to protobuf binary then pass to bridge
 		const protoBytes = WAProto.Message.encode(msg).finish()
 		const msgId = await client.sendMessageBytes(jid, protoBytes)
 		fullMsg.key.id = msgId || fullMsg.key.id
 
-		// Emit the sent message as 'messages.upsert' so listeners (e.g. download tests)
-		// can see it. The original Baileys does this in the message-send layer.
+		// Emit the sent message so listeners can see it
 		ev.emit('messages.upsert', {
 			messages: [fullMsg],
 			type: 'append'
@@ -366,44 +342,18 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 
 	// ── groupFetchAllParticipating ──
 	const groupFetchAllParticipating = async (): Promise<Record<string, GroupMetadata>> => {
-		await initPromise
+		await ensureInit()
 		if (!client) {
 			throw new Boom('Client not initialized', { statusCode: 500 })
 		}
 
-		const bridgeGroups: Record<string, BridgeGroupMetadataResult> = await client.groupFetchAllParticipating()
+		const bridgeGroups = await client.groupFetchAllParticipating()
 		const result: Record<string, GroupMetadata> = {}
 		for (const [groupJid, g] of Object.entries(bridgeGroups)) {
-			result[groupJid] = {
-				id: g.id,
-				subject: g.subject,
-				owner: g.creator,
-				creation: g.creationTime,
-				desc: g.description,
-				descId: g.descriptionId,
-				restrict: g.isLocked,
-				announce: g.isAnnouncement,
-				size: g.size,
-				participants: g.participants.map((p: BridgeGroupMetadataResult['participants'][number]) => ({
-					id: p.jid,
-					isAdmin: p.isAdmin,
-					admin: p.isAdmin ? ('admin' as const) : null
-				})),
-				ephemeralDuration: g.ephemeralExpiration,
-				subjectOwner: g.subjectOwner,
-				subjectTime: g.subjectTime,
-				joinApprovalMode: g.membershipApproval
-			}
+			result[groupJid] = bridgeGroupToMetadata(g)
 		}
 
 		return result
-	}
-
-	// ── updateMediaMessage ──
-	const updateMediaMessage = async (_msg: WAMessage): Promise<WAMessage> => {
-		// Stub: re-upload not implemented in bridge yet
-		logger.warn('updateMediaMessage not yet implemented in bridge mode')
-		return _msg
 	}
 
 	// ── end ──
@@ -414,24 +364,45 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			} catch {
 				// ignore disconnect errors
 			}
-
 			client.free()
 			client = undefined
 		}
-
-		ws?.close()
 	}
 
 	return {
-		ev: ev as BaileysEventEmitter & ReturnType<typeof makeEventBuffer>,
+		ev,
 		logger,
 		get user() {
-			return user as { id?: string; lid?: string } | undefined
+			return user
 		},
 		sendMessage,
 		groupFetchAllParticipating,
-		updateMediaMessage,
+		updateMediaMessage: async (msg: WAMessage): Promise<WAMessage> => msg,
 		end
+	}
+}
+
+/** Convert bridge group metadata to Baileys GroupMetadata */
+function bridgeGroupToMetadata(g: BridgeGroupMetadataResult): GroupMetadata {
+	return {
+		id: g.id,
+		subject: g.subject,
+		owner: g.creator,
+		creation: g.creationTime,
+		desc: g.description,
+		descId: g.descriptionId,
+		restrict: g.isLocked,
+		announce: g.isAnnouncement,
+		size: g.size,
+		participants: g.participants.map(p => ({
+			id: p.jid,
+			isAdmin: p.isAdmin,
+			admin: p.isAdmin ? 'admin' as const : null
+		})),
+		ephemeralDuration: g.ephemeralExpiration,
+		subjectOwner: g.subjectOwner,
+		subjectTime: g.subjectTime,
+		joinApprovalMode: g.membershipApproval
 	}
 }
 

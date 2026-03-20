@@ -1,5 +1,4 @@
 import { platform, release } from 'os'
-import { proto } from '../../WAProto/index.js'
 import type { BrowsersMap } from '../Types'
 
 const PLATFORM_MAP = {
@@ -21,11 +20,5 @@ export const Browsers: BrowsersMap = {
 	macOS: browser => ['Mac OS', browser, '14.4.1'],
 	baileys: browser => ['Baileys', browser, '6.5.0'],
 	windows: browser => ['Windows', browser, '10.0.22631'],
-	/** The appropriate browser based on your OS & release */
 	appropriate: browser => [PLATFORM_MAP[platform()] || 'Ubuntu', browser, release()]
-}
-
-export const getPlatformId = (browser: string) => {
-	const platformType = proto.DeviceProps.PlatformType[browser.toUpperCase() as any]
-	return platformType ? platformType.toString() : '1' //chrome
 }
