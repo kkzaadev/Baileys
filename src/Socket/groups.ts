@@ -1,0 +1,72 @@
+import type { GroupMetadataResult } from 'whatsapp-rust-bridge'
+import type { GroupMetadata } from '../Types'
+import type { SocketContext } from './types'
+
+/** Convert bridge GroupMetadataResult to Baileys GroupMetadata */
+export function bridgeGroupToMetadata(g: GroupMetadataResult): GroupMetadata {
+	return {
+		id: g.id,
+		subject: g.subject,
+		owner: g.creator,
+		creation: g.creationTime,
+		desc: g.description,
+		descId: g.descriptionId,
+		restrict: g.isLocked,
+		announce: g.isAnnouncement,
+		size: g.size,
+		participants: g.participants.map(p => ({
+			id: p.jid,
+			isAdmin: p.isAdmin,
+			admin: p.isAdmin ? 'admin' as const : null
+		})),
+		ephemeralDuration: g.ephemeralExpiration,
+		subjectOwner: g.subjectOwner,
+		subjectTime: g.subjectTime,
+		joinApprovalMode: g.membershipApproval
+	}
+}
+
+export const makeGroupMethods = (ctx: SocketContext) => ({
+	groupMetadata: async (jid: string): Promise<GroupMetadata> => {
+		const g = await ctx.getClient().getGroupMetadata(jid)
+		return bridgeGroupToMetadata(g)
+	},
+
+	groupCreate: async (subject: string, participants: string[]) => {
+		const result = await ctx.getClient().createGroup(subject, participants)
+		return result
+	},
+
+	groupLeave: async (jid: string) => {
+		await ctx.getClient().groupLeave(jid)
+	},
+
+	groupUpdateSubject: async (jid: string, subject: string) => {
+		await ctx.getClient().groupUpdateSubject(jid, subject)
+	},
+
+	groupUpdateDescription: async (jid: string, description?: string) => {
+		await ctx.getClient().groupUpdateDescription(jid, description)
+	},
+
+	groupParticipantsUpdate: async (jid: string, participants: string[], action: 'add' | 'remove' | 'promote' | 'demote') => {
+		return ctx.getClient().groupParticipantsUpdate(jid, participants, action)
+	},
+
+	groupFetchAllParticipating: async (): Promise<Record<string, GroupMetadata>> => {
+		const bridgeGroups = await ctx.getClient().groupFetchAllParticipating()
+		const result: Record<string, GroupMetadata> = {}
+		for (const [groupJid, g] of Object.entries(bridgeGroups)) {
+			result[groupJid] = bridgeGroupToMetadata(g)
+		}
+		return result
+	},
+
+	groupInviteCode: async (jid: string): Promise<string> => {
+		return ctx.getClient().groupInviteCode(jid)
+	},
+
+	groupSettingUpdate: async (jid: string, setting: 'locked' | 'announce' | 'membership_approval', value: boolean) => {
+		await ctx.getClient().groupSettingUpdate(jid, setting, value)
+	},
+})
