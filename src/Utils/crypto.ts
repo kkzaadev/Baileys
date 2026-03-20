@@ -1,4 +1,3 @@
-import { createCipheriv, createDecipheriv, createHash } from 'crypto'
 import {
 	calculateAgreement,
 	calculateSignature,
@@ -44,25 +43,4 @@ export const signedKeyPair = (identityKeyPair: KeyPair, keyId: number) => {
 	const pubKey = generateSignalPubKey(preKey.public)
 	const signature = Curve.sign(identityKeyPair.private, pubKey)
 	return { keyPair: preKey, signature, keyId }
-}
-
-const GCM_TAG_LENGTH = 128 >> 3
-
-export function aesEncryptGCM(plaintext: Uint8Array, key: Uint8Array, iv: Uint8Array, additionalData: Uint8Array) {
-	const cipher = createCipheriv('aes-256-gcm', key, iv)
-	cipher.setAAD(additionalData)
-	return Buffer.concat([cipher.update(plaintext), cipher.final(), cipher.getAuthTag()])
-}
-
-export function aesDecryptGCM(ciphertext: Uint8Array, key: Uint8Array, iv: Uint8Array, additionalData: Uint8Array) {
-	const decipher = createDecipheriv('aes-256-gcm', key, iv)
-	const enc = ciphertext.slice(0, ciphertext.length - GCM_TAG_LENGTH)
-	const tag = ciphertext.slice(ciphertext.length - GCM_TAG_LENGTH)
-	decipher.setAAD(additionalData)
-	decipher.setAuthTag(tag)
-	return Buffer.concat([decipher.update(enc), decipher.final()])
-}
-
-export function sha256(buffer: Buffer) {
-	return createHash('sha256').update(buffer).digest()
 }

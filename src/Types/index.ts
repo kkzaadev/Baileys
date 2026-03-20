@@ -7,7 +7,6 @@ export * from './Message'
 export * from './Socket'
 export * from './Events'
 export * from './Call'
-export * from './Signal'
 export * from './Newsletter'
 
 import type { AuthenticationState } from './Auth'

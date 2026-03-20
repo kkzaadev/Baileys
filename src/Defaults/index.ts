@@ -38,19 +38,7 @@ export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
 	linkPreviewImageThumbnailWidth: 192,
 	transactionOpts: { maxCommitRetries: 10, delayBetweenTriesMs: 3000 },
 	generateHighQualityLinkPreview: false,
-	enableAutoSessionRecreation: true,
-	enableRecentMessageCache: true,
 	options: {},
-	appStateMacVerification: {
-		patch: false,
-		snapshot: false
-	},
-	countryCode: 'US',
-	getMessage: async () => undefined,
-	cachedGroupMetadata: async () => undefined,
-	makeSignalRepository: (() => {
-		throw new Error('Signal repository is not used in bridge mode')
-	}) as unknown as SocketConfig['makeSignalRepository']
 }
 
 export const MEDIA_PATH_MAP: { [T in MediaType]?: string } = {

@@ -24,7 +24,7 @@ import type {
 	WAMessageKey
 } from '../Types'
 import { type BinaryNode, getBinaryNodeChild, getBinaryNodeChildBuffer, jidNormalizedUser } from '../WABinary'
-import { aesDecryptGCM, aesEncryptGCM, hkdf } from './crypto'
+import { hkdf } from './crypto'
 import { generateMessageIDV2 } from './generics'
 import type { ILogger } from './logger'
 

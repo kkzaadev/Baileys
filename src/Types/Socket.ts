@@ -2,10 +2,8 @@ import type { Agent } from 'https'
 import type { URL } from 'url'
 import { proto } from '../../WAProto/index.js'
 import type { ILogger } from '../Utils/logger'
-import type { AuthenticationState, LIDMapping, SignalAuthState, TransactionCapabilityOptions } from './Auth'
-import type { GroupMetadata } from './GroupMetadata'
-import { type MediaConnInfo, type WAMessageKey } from './Message'
-import type { SignalRepositoryWithLIDStore } from './Signal'
+import type { AuthenticationState, TransactionCapabilityOptions } from './Auth'
+import { type MediaConnInfo } from './Message'
 
 export type WAVersion = [number, number, number]
 export type WABrowserDescription = [string, string, string]
@@ -74,8 +72,6 @@ export type SocketConfig = {
 	transactionOpts: TransactionCapabilityOptions
 	/** marks the client as online whenever the socket successfully connects */
 	markOnlineOnConnect: boolean
-	/** alphanumeric country code (USA -> US) for the number used */
-	countryCode: string
 	/** provide a cache to store media, so does not have to be re-uploaded */
 	mediaCache?: CacheStore
 	/**
@@ -100,12 +96,6 @@ export type SocketConfig = {
 	 * */
 	generateHighQualityLinkPreview: boolean
 
-	/** Enable automatic session recreation for failed messages */
-	enableAutoSessionRecreation: boolean
-
-	/** Enable recent message caching for retry handling */
-	enableRecentMessageCache: boolean
-
 	/**
 	 * Returns if a jid should be ignored,
 	 * no event for that jid will be triggered.
@@ -113,7 +103,6 @@ export type SocketConfig = {
 	 * */
 	shouldIgnoreJid: (jid: string) => boolean | undefined
 
-	/**
 	/**
 	 * Optionally patch the message before sending out
 	 * */
@@ -125,27 +114,6 @@ export type SocketConfig = {
 		| PatchedMessageWithRecipientJID[]
 		| PatchedMessageWithRecipientJID
 
-	/** verify app state MACs */
-	appStateMacVerification: {
-		patch: boolean
-		snapshot: boolean
-	}
-
 	/** options for HTTP fetch requests */
 	options: RequestInit
-	/**
-	 * fetch a message from your store
-	 * implement this so that messages failed to send
-	 * (solves the "this message can take a while" issue) can be retried
-	 * */
-	getMessage: (key: WAMessageKey) => Promise<proto.IMessage | undefined>
-
-	/** cached group metadata, use to prevent redundant requests to WA & speed up msg sending */
-	cachedGroupMetadata: (jid: string) => Promise<GroupMetadata | undefined>
-
-	makeSignalRepository: (
-		auth: SignalAuthState,
-		logger: ILogger,
-		pnToLIDFunc?: (jids: string[]) => Promise<LIDMapping[] | undefined>
-	) => SignalRepositoryWithLIDStore
 }
