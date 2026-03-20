@@ -1,5 +1,4 @@
 import { proto } from '../../WAProto/index.js'
-import { makeLibSignalRepository } from '../Signal/libsignal'
 import type { AuthenticationState, SocketConfig, WAVersion } from '../Types'
 import { Browsers } from '../Utils/browser-utils'
 import logger from '../Utils/logger'
@@ -51,6 +50,11 @@ export const PROCESSABLE_HISTORY_TYPES = [
 	proto.HistorySync.HistorySyncType.INITIAL_STATUS_V3
 ]
 
+// Stub makeSignalRepository -- the bridge handles Signal protocol now
+const makeSignalRepositoryStub = (() => {
+	throw new Error('Signal repository is not used in bridge mode')
+}) as unknown as SocketConfig['makeSignalRepository']
+
 export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
 	version: version as WAVersion,
 	browser: Browsers.macOS('Chrome'),
@@ -85,7 +89,7 @@ export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
 	countryCode: 'US',
 	getMessage: async () => undefined,
 	cachedGroupMetadata: async () => undefined,
-	makeSignalRepository: makeLibSignalRepository
+	makeSignalRepository: makeSignalRepositoryStub
 }
 
 export const MEDIA_PATH_MAP: { [T in MediaType]?: string } = {

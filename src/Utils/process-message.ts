@@ -291,7 +291,7 @@ const processMessage = async (
 						logger?.debug({ count: data.lidPnMappings.length }, 'processing LID-PN mappings from history sync')
 						await signalRepository.lidMapping
 							.storeLIDPNMappings(data.lidPnMappings)
-							.catch(err => logger?.warn({ err }, 'failed to store LID-PN mappings from history sync'))
+							.catch((err: unknown) => logger?.warn({ err }, 'failed to store LID-PN mappings from history sync'))
 					}
 
 					ev.emit('messaging-history.set', {

@@ -1,11 +1,11 @@
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from 'crypto'
 import {
-	generateKeyPair as bridgeGenerateKeyPair,
 	calculateAgreement,
 	calculateSignature,
-	verifySignature,
-	md5,
+	generateKeyPair as bridgeGenerateKeyPair,
 	hkdf,
+	md5,
+	verifySignature
 } from 'whatsapp-rust-bridge'
 import { KEY_BUNDLE_TYPE } from '../Defaults'
 import type { KeyPair } from '../Types'

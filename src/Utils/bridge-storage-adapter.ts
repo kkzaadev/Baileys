@@ -10,15 +10,35 @@ import type { SignalRepositoryWithLIDStore } from '../Types/Signal'
 import { generateSignalPubKey } from './crypto'
 
 /**
+ * Convert snake_case keys to camelCase, recursively.
+ * Used to convert prost/serde output to Baileys-compatible format.
+ */
+export function snakeToCamelDeep(obj: any): any {
+	if (obj === null || obj === undefined) return obj
+	if (obj instanceof Uint8Array || ArrayBuffer.isView(obj)) return obj
+	// Convert BigInt to Number (lossy for >2^53, matches protobufjs behavior)
+	if (typeof obj === 'bigint') return Number(obj)
+	if (Array.isArray(obj)) return obj.map(snakeToCamelDeep)
+	if (typeof obj === 'object') {
+		const result: any = {}
+		for (const [key, value] of Object.entries(obj)) {
+			const camelKey = key.replace(/_([a-z])/g, (_, l: string) => l.toUpperCase())
+			result[camelKey] = snakeToCamelDeep(value)
+		}
+
+		return result
+	}
+
+	return obj
+}
+
+/**
  * Create a MessageDecryptionContext that the bridge's `decryptMessageStanza` can use.
  *
  * This bridges between Baileys' auth state and the bridge's SignalStorage interface,
  * plus adds the LID mapping and SKDM processing callbacks.
  */
-export function createBridgeDecryptionContext(
-	auth: SignalAuthState,
-	signalRepository: SignalRepositoryWithLIDStore
-) {
+export function createBridgeDecryptionContext(auth: SignalAuthState, signalRepository: SignalRepositoryWithLIDStore) {
 	const { creds, keys } = auth
 	const parsedKeys = keys as SignalKeyStoreWithTransaction
 
@@ -49,7 +69,7 @@ export function createBridgeDecryptionContext(
 			const { signedIdentityKey } = creds
 			return {
 				pubKey: new Uint8Array(generateSignalPubKey(signedIdentityKey.public)),
-				privKey: new Uint8Array(signedIdentityKey.private),
+				privKey: new Uint8Array(signedIdentityKey.private)
 			}
 		},
 
@@ -68,9 +88,10 @@ export function createBridgeDecryptionContext(
 			if (key) {
 				return {
 					pubKey: new Uint8Array(key.public),
-					privKey: new Uint8Array(key.private),
+					privKey: new Uint8Array(key.private)
 				}
 			}
+
 			return null
 		},
 
@@ -83,7 +104,7 @@ export function createBridgeDecryptionContext(
 			return {
 				pubKey: new Uint8Array(key.keyPair.public),
 				privKey: new Uint8Array(key.keyPair.private),
-				signature: new Uint8Array(key.signature),
+				signature: new Uint8Array(key.signature)
 			}
 		},
 
@@ -116,6 +137,6 @@ export function createBridgeDecryptionContext(
 				authorJid,
 				item: { groupId, axolotlSenderKeyDistributionMessage: skdmBytes }
 			})
-		},
+		}
 	}
 }

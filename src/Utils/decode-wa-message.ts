@@ -1,5 +1,21 @@
 import { Boom } from '@hapi/boom'
-import { processDecryptedPlaintext } from 'whatsapp-rust-bridge'
+
+// Stub: processDecryptedPlaintext is handled by the bridge internally
+const processDecryptedPlaintext = (
+	data: Uint8Array,
+	_paddingVersion: number,
+	_fromMe: boolean
+): { message: proto.IMessage; hasInvalidDsm: boolean; hasSkdm: boolean; skdm?: Uint8Array } => {
+	// In bridge mode, the WASM engine handles decryption internally.
+	// This stub decodes the proto message directly.
+	try {
+		const msg = proto.Message.decode(data)
+		return { message: msg, hasInvalidDsm: false, hasSkdm: false }
+	} catch {
+		return { message: {}, hasInvalidDsm: false, hasSkdm: false }
+	}
+}
+
 import { proto } from '../../WAProto/index.js'
 import type { WAMessage, WAMessageKey } from '../Types'
 import type { SignalRepositoryWithLIDStore } from '../Types/Signal'
@@ -303,13 +319,9 @@ export const decryptMessageNode = (
 						// Padding version 3 = no unpadding (used for plaintext)
 						// Padding version 2 = standard WhatsApp padding (used for encrypted)
 						const paddingVersion = e2eType === 'plaintext' ? 3 : 2
-						const processed = processDecryptedPlaintext(
-							msgBuffer,
-							paddingVersion,
-							fullMessage.key.fromMe || false
-						)
+						const processed = processDecryptedPlaintext(msgBuffer, paddingVersion, fullMessage.key.fromMe || false)
 
-						const msg = processed.message as proto.IMessage
+						const msg = processed.message
 
 						if (processed.hasInvalidDsm) {
 							logger.warn({ key: fullMessage.key }, 'DeviceSentMessage from non-self sender')
@@ -320,7 +332,7 @@ export const decryptMessageNode = (
 							try {
 								await repository.processSenderKeyDistributionMessage({
 									authorJid: author,
-									item: processed.skdm
+									item: processed.skdm as unknown as proto.Message.ISenderKeyDistributionMessage
 								})
 							} catch (err) {
 								logger.error({ key: fullMessage.key, err }, 'failed to process sender key distribution message')

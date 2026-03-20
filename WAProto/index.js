@@ -14,6 +14,121 @@
 import { encodeProto, decodeProto } from 'whatsapp-rust-bridge';
 
 // ---------------------------------------------------------------------------
+// Key case conversion: Baileys uses camelCase, prost uses snake_case
+// ---------------------------------------------------------------------------
+function camelToSnake(str) {
+  return str.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
+}
+
+function snakeToCamel(str) {
+  return str.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+}
+
+/**
+ * Check if a plain array looks like a byte array (all elements are integers 0-255).
+ * prost+serde serializes Vec<u8> without serde_bytes as Array<number>, but
+ * protobufjs returns Buffer/Uint8Array. We convert back to match Baileys' expectations.
+ */
+function isByteArray(arr) {
+  if (arr.length === 0) return false;
+  // Sample first, last, and a middle element for speed
+  const check = (v) => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 255;
+  if (!check(arr[0])) return false;
+  if (arr.length > 1 && !check(arr[arr.length - 1])) return false;
+  if (arr.length > 2 && !check(arr[Math.floor(arr.length / 2)])) return false;
+  // Full check only for small arrays or if samples pass
+  return arr.length <= 8 || arr.every(check);
+}
+
+function convertKeysDeep(obj, converter, truncateFloats = false) {
+  if (obj === null || obj === undefined) return obj;
+  if (obj instanceof Uint8Array || obj instanceof ArrayBuffer || Buffer.isBuffer(obj)) return obj;
+  // Convert BigInt to Number (lossy for >2^53, matches protobufjs behavior)
+  if (typeof obj === 'bigint') return Number(obj);
+  // Truncate floats to integers when encoding for prost (protobuf integer fields)
+  if (truncateFloats && typeof obj === 'number' && !Number.isInteger(obj)) return Math.trunc(obj);
+  if (Array.isArray(obj)) {
+    // Convert byte arrays (Array<number>) back to Buffer (matches protobufjs)
+    if (isByteArray(obj)) return Buffer.from(obj);
+    return obj.map(item => convertKeysDeep(item, converter, truncateFloats));
+  }
+  if (typeof obj === 'object') {
+    const result = {};
+    for (const [key, value] of Object.entries(obj)) {
+      result[converter(key)] = convertKeysDeep(value, converter, truncateFloats);
+    }
+    return result;
+  }
+  return obj;
+}
+
+/**
+ * Known proto field name suffixes that are bytes fields.
+ * When these contain base64 strings, convert to Uint8Array for prost.
+ */
+const BYTES_FIELD_SUFFIXES = [
+  'thumbnail', 'key', 'hash', 'sha256', 'enc', 'mac', 'iv', 'signature',
+  'ciphertext', 'payload', 'token', 'secret', 'identity', 'ephemeral',
+  'static', 'hmac'
+];
+
+function looksLikeBase64(str) {
+  // Quick check: base64 is alphanumeric + /+ with optional = padding, min 4 chars
+  return str.length >= 4 && /^[A-Za-z0-9+/]+=*$/.test(str);
+}
+
+/**
+ * Recursively convert base64 strings to Uint8Array in proto objects.
+ * protobufjs accepts base64 for bytes fields, but serde_wasm_bindgen needs Uint8Array.
+ * Mutates in place for efficiency.
+ */
+function convertBase64ToBytes(obj) {
+  if (!obj || typeof obj !== 'object' || obj instanceof Uint8Array || Buffer.isBuffer(obj)) return;
+  if (Array.isArray(obj)) {
+    for (const item of obj) convertBase64ToBytes(item);
+    return;
+  }
+  for (const [key, value] of Object.entries(obj)) {
+    if (typeof value === 'string' && value.length > 0) {
+      // Check if field name suggests bytes content
+      const lowerKey = key.toLowerCase();
+      const isLikelyBytes = BYTES_FIELD_SUFFIXES.some(s => lowerKey.includes(s));
+      if (isLikelyBytes && looksLikeBase64(value)) {
+        obj[key] = Buffer.from(value, 'base64');
+      }
+    } else if (typeof value === 'object' && value !== null) {
+      convertBase64ToBytes(value);
+    }
+  }
+}
+
+/**
+ * Strip default/empty values from a decoded proto object.
+ * prost with #[serde(default)] outputs ALL fields, but protobufjs only outputs set fields.
+ * We remove: empty strings, 0, false, null, undefined, empty arrays, empty objects.
+ */
+function stripDefaults(obj) {
+  if (obj === null || obj === undefined) return obj;
+  if (obj instanceof Uint8Array || obj instanceof ArrayBuffer || Buffer.isBuffer(obj)) return obj;
+  if (typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) {
+    if (obj.length === 0) return undefined;
+    return obj.map(stripDefaults).filter(v => v !== undefined);
+  }
+  const result = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (value === null || value === undefined) continue;
+    if (value === '' || value === 0 || value === false) continue;
+    if (Array.isArray(value) && value.length === 0) continue;
+    const stripped = stripDefaults(value);
+    if (stripped === undefined) continue;
+    if (typeof stripped === 'object' && !(stripped instanceof Uint8Array) && !Buffer.isBuffer(stripped) && !Array.isArray(stripped) && Object.keys(stripped).length === 0) continue;
+    result[key] = stripped;
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Helper: create a proto class with encode/decode/create/fromObject/toObject
 // ---------------------------------------------------------------------------
 function createProtoClass(typeName) {
@@ -21,20 +136,35 @@ function createProtoClass(typeName) {
     encode(obj) {
       return {
         finish() {
-          return encodeProto(typeName, obj);
+          // Convert camelCase keys to snake_case for prost, truncate floats for integer fields
+          const snakeObj = convertKeysDeep(obj, camelToSnake, true);
+          // Convert base64 strings to Uint8Array for prost bytes fields.
+          // protobufjs accepts base64 strings for bytes, but serde_wasm_bindgen needs Uint8Array.
+          convertBase64ToBytes(snakeObj);
+          return encodeProto(typeName, snakeObj);
         },
       };
     },
     decode(buffer) {
       const data = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
       const decoded = decodeProto(typeName, data);
-      if (decoded && typeof decoded === 'object') {
-        decoded.toJSON = function () { return this; };
+      // Convert snake_case keys to camelCase for Baileys
+      const camelDecoded = convertKeysDeep(decoded, snakeToCamel);
+      // Strip default/empty values so only set fields remain (matches protobufjs behavior).
+      // prost+serde(default) outputs ALL fields including empty defaults.
+      const stripped = stripDefaults(camelDecoded);
+      if (stripped && typeof stripped === 'object') {
+        stripped.toJSON = function () { return this; };
       }
-      return decoded;
+      return stripped;
     },
     create(obj) { return obj || {}; },
-    fromObject(obj) { return obj; },
+    fromObject(obj) {
+      if (obj && typeof obj === 'object') {
+        obj.toJSON = function() { return this; };
+      }
+      return obj;
+    },
     toObject(obj) { return obj; },
   };
 }
@@ -86,10 +216,19 @@ CertChain.NoiseCertificate.Details = createProtoClass('CertChain.NoiseCertificat
 Message.PollVoteMessage = createProtoClass('Message.PollVoteMessage');
 Message.EventResponseMessage = createProtoClass('Message.EventResponseMessage');
 
-// Message nested stubs used with fromObject/create (passthrough)
-Message.HistorySyncNotification = createProtoClass('Message');
-Message.GroupInviteMessage = createProtoClass('Message');
-Message.AppStateSyncKeyData = createProtoClass('Message');
+// Message nested types used with .create() — passthrough (no encode/decode needed)
+Message.ReactionMessage = { create(obj) { return obj || {}; }, fromObject(obj) { return obj; } };
+Message.ContactMessage = { create(obj) { return obj || {}; }, fromObject(obj) { return obj; } };
+Message.ContactsArrayMessage = { create(obj) { return obj || {}; }, fromObject(obj) { return obj; } };
+Message.LocationMessage = { create(obj) { return obj || {}; }, fromObject(obj) { return obj; } };
+Message.ImageMessage = { create(obj) { return obj || {}; }, fromObject(obj) { return obj; } };
+Message.VideoMessage = { create(obj) { return obj || {}; }, fromObject(obj) { return obj; } };
+Message.AudioMessage = { create(obj) { return obj || {}; }, fromObject(obj) { return obj; } };
+Message.DocumentMessage = { create(obj) { return obj || {}; }, fromObject(obj) { return obj; } };
+Message.StickerMessage = { create(obj) { return obj || {}; }, fromObject(obj) { return obj; } };
+Message.HistorySyncNotification = { create(obj) { return obj || {}; }, fromObject(obj) { return obj; } };
+Message.GroupInviteMessage = { create(obj) { return obj || {}; }, fromObject(obj) { return obj; } };
+Message.AppStateSyncKeyData = { create(obj) { return obj || {}; }, fromObject(obj) { return obj; } };
 
 // VerifiedNameCertificate.Details
 VerifiedNameCertificate.Details = createProtoClass('VerifiedNameCertificate.Details');

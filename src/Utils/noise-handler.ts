@@ -19,11 +19,7 @@ export const makeNoiseHandler = ({
 }) => {
 	logger = logger.child({ class: 'ns' })
 
-	const session = new NoiseSession(
-		publicKey,
-		NOISE_HEADER,
-		routingInfo ? new Uint8Array(routingInfo) : undefined
-	)
+	const session = new NoiseSession(publicKey, NOISE_HEADER, routingInfo ? new Uint8Array(routingInfo) : undefined)
 
 	return {
 		encrypt: (plaintext: Uint8Array): Uint8Array => {
@@ -64,7 +60,24 @@ export const makeNoiseHandler = ({
 				throw new Error('invalid noise intermediate certificate')
 			}
 
-			const details = proto.CertChain.NoiseCertificate.Details.decode(certIntermediate.details!)
+			const details = proto.CertChain.NoiseCertificate.Details.decode(certIntermediate.details)
+
+			logger.debug(
+				{
+					detailsKeyLen: details.key?.length,
+					detailsKeyType: typeof details.key,
+					detailsKeyIsBuffer: Buffer.isBuffer(details.key),
+					detailsKeyIsUint8: details.key instanceof Uint8Array,
+					leafDetailsLen: leaf.details?.length,
+					leafDetailsType: typeof leaf.details,
+					leafSigLen: leaf.signature?.length,
+					certIntDetailsLen: certIntermediate.details?.length,
+					certIntDetailsType: typeof certIntermediate.details,
+					certIntSigLen: certIntermediate.signature?.length,
+					waCertKeyLen: WA_CERT_DETAILS.PUBLIC_KEY.length
+				},
+				'cert chain verify debug'
+			)
 
 			const verify = Curve.verify(details.key!, leaf.details, leaf.signature)
 			const verifyIntermediate = Curve.verify(
@@ -72,6 +85,8 @@ export const makeNoiseHandler = ({
 				certIntermediate.details,
 				certIntermediate.signature
 			)
+
+			logger.debug({ verify, verifyIntermediate }, 'cert chain verify results')
 
 			if (!verify) {
 				throw new Error('noise certificate signature invalid')
@@ -86,11 +101,7 @@ export const makeNoiseHandler = ({
 			}
 
 			// Step 3: Encrypt our noise key and mix shared secret
-			const keyEnc = session.processHandshakeFinish(
-				noiseKey.public,
-				noiseKey.private,
-				serverHello!.ephemeral!
-			)
+			const keyEnc = session.processHandshakeFinish(noiseKey.public, noiseKey.private, serverHello.ephemeral!)
 
 			return keyEnc
 		},
