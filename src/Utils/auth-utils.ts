@@ -2,12 +2,7 @@ import NodeCache from '@cacheable/node-cache'
 import { Mutex } from 'async-mutex'
 import { randomBytes } from 'crypto'
 import { DEFAULT_CACHE_TTLS } from '../Defaults'
-import type {
-	AuthenticationCreds,
-	CacheStore,
-	SignalDataTypeMap,
-	SignalKeyStore,
-} from '../Types'
+import type { AuthenticationCreds, CacheStore, SignalDataTypeMap, SignalKeyStore } from '../Types'
 import { Curve, signedKeyPair } from './crypto'
 import { generateRegistrationId } from './generics'
 import type { ILogger } from './logger'

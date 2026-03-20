@@ -156,4 +156,6 @@ export interface BaileysEventEmitter {
 	off<T extends keyof BaileysEventMap>(event: T, listener: (arg: BaileysEventMap[T]) => void): void
 	removeAllListeners<T extends keyof BaileysEventMap>(event: T): void
 	emit<T extends keyof BaileysEventMap>(event: T, arg: BaileysEventMap[T]): boolean
+	/** Process events in a batched callback. Each event fires individually (no buffering in bridge mode). */
+	process(handler: (events: Partial<BaileysEventMap>) => void | Promise<void>): void
 }

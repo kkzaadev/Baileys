@@ -66,7 +66,14 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 
 	// ── Transport adapter ──
 	const makeTransport = (): JsTransportCallbacks => {
+		let ws: WebSocket | undefined
 		let handle: JsTransportHandle | undefined
+		// The WS that disconnect() should close. During reconnection the bridge calls:
+		// create_transport() → connect(new) → disconnect(old)
+		// connect() sets ws=newWs BEFORE disconnect() runs, so without this,
+		// disconnect() would kill the new connection. disconnectTarget captures
+		// the OLD ws at connect() time.
+		let disconnectTarget: WebSocket | undefined
 
 		return {
 			connect(h: JsTransportHandle) {
@@ -78,18 +85,16 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 					wsOpts.agent = agent as unknown as WebSocket.ClientOptions['agent']
 				}
 
-				// Close previous WS if reconnecting
+				// Capture the old WS as the disconnect target before replacing
+				disconnectTarget = ws
 				if (ws) {
 					ws.removeAllListeners()
-					ws.close()
 				}
 
 				const newWs = new WebSocket(url, wsOpts)
 				newWs.binaryType = 'arraybuffer'
 				ws = newWs
 
-				// Return a Promise so the bridge waits for the WS to be open
-				// before sending the noise handshake
 				return new Promise<void>((resolve, reject) => {
 					newWs.on('open', () => {
 						if (ws !== newWs) return
@@ -120,11 +125,18 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 				}
 			},
 			disconnect() {
-				if (ws) {
-					ws.removeAllListeners()
-					ws.close()
+				// Close the disconnect target (the OLD ws), not the current ws
+				// which might already be a new connection from a concurrent connect()
+				const toClose = disconnectTarget ?? ws
+				if (toClose) {
+					toClose.removeAllListeners()
+					toClose.on('error', () => {})
+					try { toClose.close() } catch { toClose.terminate() }
+				}
+				if (toClose === ws) {
 					ws = undefined
 				}
+				disconnectTarget = undefined
 			}
 		}
 	}
