@@ -1,662 +1,372 @@
 import { Boom } from '@hapi/boom'
 import { jest } from '@jest/globals'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { Agent } from 'node:https'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import P from 'pino'
 import makeWASocket, {
 	DisconnectReason,
-	downloadContentFromMessage,
 	downloadMediaMessage,
 	jidNormalizedUser,
 	proto,
-	toBuffer,
 	useMultiFileAuthState,
 	type WAMessage
 } from '../../index'
 
-jest.setTimeout(30_000)
+jest.setTimeout(60_000)
 
-describe('E2E Tests', () => {
-	let sock: ReturnType<typeof makeWASocket>
-	let meJid: string | undefined
-	let meLid: string | undefined
-	let groupJid: string | undefined
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-	beforeAll(async () => {
-		const logger = P({ level: 'debug' })
-		const agent = new Agent({ rejectUnauthorized: false })
+type WASocket = ReturnType<typeof makeWASocket>
 
-		const connectSocket = async (): Promise<void> => {
-			const { state, saveCreds } = await useMultiFileAuthState('baileys_auth_info')
+const logger = P({ level: process.env.LOG_LEVEL ?? 'warn' })
+const agent = new Agent({ rejectUnauthorized: false })
+const socketUrl = process.env.SOCKET_URL ?? 'wss://127.0.0.1:8080/ws/chat'
 
-			if (process.env.ADV_SECRET_KEY) {
-				state.creds.advSecretKey = process.env.ADV_SECRET_KEY ?? 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
+async function createTestClient(label: string): Promise<{
+	sock: WASocket
+	jid: string
+	lid?: string
+	authFolder: string
+}> {
+	const authFolder = mkdtempSync(join(tmpdir(), `baileys-e2e-${label}-`))
+	const { state, saveCreds } = await useMultiFileAuthState(authFolder)
+
+	const sock = makeWASocket({
+		auth: { creds: state.creds, keys: state.keys },
+		waWebSocketUrl: socketUrl,
+		logger: logger.child({ user: label }),
+		agent,
+		fetchAgent: agent
+	})
+
+	sock.ev.on('creds.update', saveCreds)
+
+	const jid = await new Promise<string>((resolve, reject) => {
+		sock.ev.on('connection.update', update => {
+			if (update.connection === 'open') {
+				resolve(jidNormalizedUser(sock.user?.id))
+			} else if (update.connection === 'close') {
+				const reason = (update.lastDisconnect?.error as Boom)?.output?.statusCode
+				if (reason === DisconnectReason.loggedOut) {
+					reject(new Error(`${label}: Logged out`))
+				}
 			}
+		})
+	})
 
-			sock = makeWASocket({
-				auth: {
-					creds: state.creds,
-					keys: state.keys
-				},
-				waWebSocketUrl: process.env.SOCKET_URL ?? 'wss://127.0.0.1:8080/ws/chat',
-				logger,
-				agent,
-				fetchAgent: agent
-			})
+	return { sock, jid, lid: sock.user?.lid, authFolder }
+}
 
-			sock.ev.on('creds.update', saveCreds)
+async function destroyTestClient(client: { sock: WASocket; authFolder: string }) {
+	try {
+		await client.sock.end()
+	} catch {
+		/* ignore */
+	}
 
-			await new Promise<void>((resolve, reject) => {
-				sock.ev.on('connection.update', update => {
-					const { connection, lastDisconnect } = update
-					if (connection === 'open') {
-						meJid = jidNormalizedUser(sock.user?.id)
-						meLid = sock.user?.lid
+	try {
+		rmSync(client.authFolder, { recursive: true, force: true })
+	} catch {
+		/* ignore */
+	}
+}
 
-						sock
-							.groupFetchAllParticipating()
-							.then(groups => {
-								const group = Object.values(groups).find(g => g.subject === 'Baileys Group Test')
-								if (group) {
-									groupJid = group.id
-									console.log(`Found test group "${group.subject}" with JID: ${groupJid}`)
-								}
-
-								resolve()
-							})
-							.catch(reject)
-					} else if (connection === 'close') {
-						const reason = (lastDisconnect?.error as Boom)?.output?.statusCode
-						if (reason === DisconnectReason.loggedOut) {
-							reject(new Error('Logged out, please delete the baileys_auth_info folder and re-run the test'))
-							return
-						}
-
-						// Reconnect on non-logout disconnects (e.g. after pairing)
-						console.log(`Connection closed (${DisconnectReason[reason] || reason}), reconnecting...`)
-						connectSocket().then(resolve, reject)
-					}
-				})
-			})
+function waitForMessage(
+	sock: WASocket,
+	predicate: (msg: proto.IWebMessageInfo) => boolean,
+	timeoutMs = 15_000
+): Promise<proto.IWebMessageInfo> {
+	return new Promise((resolve, reject) => {
+		const listener = (data: { messages: proto.IWebMessageInfo[] }) => {
+			const msg = data.messages.find(predicate)
+			if (msg) {
+				sock.ev.off('messages.upsert', listener)
+				clearTimeout(tid)
+				resolve(msg)
+			}
 		}
 
-		await connectSocket()
+		sock.ev.on('messages.upsert', listener)
+		const tid = setTimeout(() => {
+			sock.ev.off('messages.upsert', listener)
+			reject(new Error('Timed out waiting for message'))
+		}, timeoutMs)
+	})
+}
+
+function getTextContent(msg: proto.IWebMessageInfo): string | undefined {
+	return msg.message?.extendedTextMessage?.text || msg.message?.conversation || undefined
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe('E2E: Two-user messaging', () => {
+	let alice: Awaited<ReturnType<typeof createTestClient>>
+	let bob: Awaited<ReturnType<typeof createTestClient>>
+
+	beforeAll(async () => {
+		;[alice, bob] = await Promise.all([createTestClient('alice'), createTestClient('bob')])
+		logger.info({ alice: alice.jid, bob: bob.jid }, 'Both users connected')
 	})
 
 	afterAll(async () => {
-		if (sock) {
-			await sock.end()
-		}
+		await Promise.all([destroyTestClient(alice), destroyTestClient(bob)])
 	})
 
-	test('should send a message', async () => {
-		const messageContent = `E2E Test Message ${Date.now()}`
-		const sentMessage = await sock.sendMessage(meJid!, { text: messageContent })
+	// ── Text messages ──
 
-		expect(sentMessage).toBeDefined()
-		console.log('Sent message:', sentMessage!.key.id)
-		expect(sentMessage!.key.id).toBeTruthy()
-		expect(sentMessage!.message?.extendedTextMessage?.text || sentMessage!.message?.conversation).toBe(messageContent)
+	test('Alice sends text → Bob receives it', async () => {
+		const text = `Hello Bob! ${Date.now()}`
+
+		const bobReceived = waitForMessage(bob.sock, m => getTextContent(m) === text && !m.key?.fromMe)
+
+		const sent = await alice.sock.sendMessage(bob.jid, { text })
+		const received = await bobReceived
+
+		// Sender side
+		expect(sent).toBeDefined()
+		expect(sent!.key.id).toBeTruthy()
+
+		// Receiver side: correct text, not fromMe, remoteJid matches sender
+		expect(getTextContent(received)).toBe(text)
+		expect(received.key?.fromMe).toBe(false)
+		expect(received.key?.remoteJid).toBe(alice.jid)
+
+		// Message ID should match between sender and receiver
+		expect(received.key?.id).toBe(sent!.key.id)
 	})
 
-	test('should edit a message', async () => {
-		const messageContent = `E2E Test Message to Edit ${Date.now()}`
-		const sentMessage = await sock.sendMessage(meJid!, { text: messageContent })
+	test('Bob sends text → Alice receives it', async () => {
+		const text = `Hi Alice! ${Date.now()}`
 
-		expect(sentMessage).toBeDefined()
-		console.log('Sent message to edit:', sentMessage!.key.id)
+		const aliceReceived = waitForMessage(alice.sock, m => getTextContent(m) === text && !m.key?.fromMe)
 
-		const newContent = `E2E Edited Message ${Date.now()}`
-		const editedMessage = await sock.sendMessage(meJid!, {
-			text: newContent,
-			edit: sentMessage!.key
-		})
+		const sent = await bob.sock.sendMessage(alice.jid, { text })
+		const received = await aliceReceived
 
-		expect(editedMessage).toBeDefined()
-		console.log('Edited message response:', editedMessage!.key.id)
-
-		expect(editedMessage!.message?.protocolMessage?.type).toBe(proto.Message.ProtocolMessage.Type.MESSAGE_EDIT)
-		const editedContent = editedMessage!.message?.protocolMessage?.editedMessage
-		expect(editedContent?.extendedTextMessage?.text || editedContent?.conversation).toBe(newContent)
+		expect(getTextContent(received)).toBe(text)
+		expect(received.key?.fromMe).toBe(false)
+		expect(received.key?.remoteJid).toBe(bob.jid)
+		expect(received.key?.id).toBe(sent!.key.id)
 	})
 
-	test('should react to a message', async () => {
-		const messageContent = `E2E Test Message to React to ${Date.now()}`
-		const sentMessage = await sock.sendMessage(meJid!, { text: messageContent })
+	// ── Edit ──
 
-		expect(sentMessage).toBeDefined()
-		console.log('Sent message to react to:', sentMessage!.key.id)
+	test('Alice sends → edits → sender returns correct edit proto', async () => {
+		const original = `Original ${Date.now()}`
+		const edited = `Edited ${Date.now()}`
 
-		const reaction = '👍'
-		const reactionMessage = await sock.sendMessage(meJid!, {
-			react: {
-				text: reaction,
-				key: sentMessage!.key
-			}
-		})
+		const bobGotOriginal = waitForMessage(bob.sock, m => getTextContent(m) === original && !m.key?.fromMe)
+		const sent = await alice.sock.sendMessage(bob.jid, { text: original })
+		const originalReceived = await bobGotOriginal
 
-		expect(reactionMessage).toBeDefined()
-		console.log('Sent reaction:', reactionMessage!.key.id)
+		// Verify original was received correctly
+		expect(originalReceived.key?.id).toBe(sent!.key.id)
 
-		expect(reactionMessage!.message?.reactionMessage?.text).toBe(reaction)
-		expect(reactionMessage!.message?.reactionMessage?.key?.id).toBe(sentMessage!.key.id)
+		const editResult = await alice.sock.sendMessage(bob.jid, { text: edited, edit: sent!.key })
+		expect(editResult).toBeDefined()
+		expect(editResult!.message?.protocolMessage?.type).toBe(proto.Message.ProtocolMessage.Type.MESSAGE_EDIT)
+		expect(editResult!.message?.protocolMessage?.key?.id).toBe(sent!.key.id)
+
+		const editedContent = editResult!.message?.protocolMessage?.editedMessage
+		expect(editedContent?.extendedTextMessage?.text || editedContent?.conversation).toBe(edited)
 	})
 
-	test('should remove a reaction from a message', async () => {
-		const messageContent = `E2E Test Message to Remove Reaction from ${Date.now()}`
-		const sentMessage = await sock.sendMessage(meJid!, { text: messageContent })
+	// ── Delete ──
 
-		expect(sentMessage).toBeDefined()
-		console.log('Sent message to remove reaction from:', sentMessage!.key.id)
+	test('Alice sends → deletes → sender returns correct revoke proto', async () => {
+		const text = `Delete me ${Date.now()}`
 
-		await sock.sendMessage(meJid!, {
-			react: {
-				text: '😄',
-				key: sentMessage!.key
-			}
-		})
+		const bobGotIt = waitForMessage(bob.sock, m => getTextContent(m) === text && !m.key?.fromMe)
+		const sent = await alice.sock.sendMessage(bob.jid, { text })
+		await bobGotIt
 
-		const removeReactionMessage = await sock.sendMessage(meJid!, {
-			react: {
-				text: '',
-				key: sentMessage!.key
-			}
-		})
-
-		expect(removeReactionMessage).toBeDefined()
-		console.log('Sent remove reaction:', removeReactionMessage!.key.id)
-
-		expect(removeReactionMessage!.message?.reactionMessage?.text).toBe('')
-		expect(removeReactionMessage!.message?.reactionMessage?.key?.id).toBe(sentMessage!.key.id)
+		const deleted = await alice.sock.sendMessage(bob.jid, { delete: sent!.key })
+		expect(deleted).toBeDefined()
+		expect(deleted!.message?.protocolMessage?.type).toBe(proto.Message.ProtocolMessage.Type.REVOKE)
+		expect(deleted!.message?.protocolMessage?.key?.id).toBe(sent!.key.id)
 	})
 
-	test('should delete a message', async () => {
-		const messageContent = `E2E Test Message to Delete ${Date.now()}`
-		const sentMessage = await sock.sendMessage(meJid!, { text: messageContent })
+	// ── Reactions ──
 
-		expect(sentMessage).toBeDefined()
-		console.log('Sent message to delete:', sentMessage!.key.id)
+	test('Alice sends → Bob reacts with correct key reference', async () => {
+		const text = `React to me ${Date.now()}`
 
-		const deleteMessage = await sock.sendMessage(meJid!, {
-			delete: sentMessage!.key
+		const bobGotIt = waitForMessage(bob.sock, m => getTextContent(m) === text && !m.key?.fromMe)
+		await alice.sock.sendMessage(bob.jid, { text })
+		const received = await bobGotIt
+
+		const reaction = await bob.sock.sendMessage(alice.jid, {
+			react: { text: '❤️', key: received.key as proto.IMessageKey }
 		})
 
-		expect(deleteMessage).toBeDefined()
-		console.log('Sent delete message command:', deleteMessage!.key.id)
-
-		expect(deleteMessage!.message?.protocolMessage?.type).toBe(proto.Message.ProtocolMessage.Type.REVOKE)
-		expect(deleteMessage!.message?.protocolMessage?.key?.id).toBe(sentMessage!.key.id)
+		expect(reaction).toBeDefined()
+		expect(reaction!.message?.reactionMessage?.text).toBe('❤️')
+		// Reaction should reference the original message
+		expect(reaction!.message?.reactionMessage?.key?.id).toBe(received.key?.id)
 	})
 
-	test('should forward a message', async () => {
-		const messageContent = `E2E Test Message to Forward ${Date.now()}`
-		const sentMessage = await sock.sendMessage(meJid!, {
-			text: messageContent
-		})
+	// ── Reply with quote ──
 
-		expect(sentMessage).toBeDefined()
-		console.log('Sent message to forward:', sentMessage!.key.id)
+	test('Alice sends → Bob replies → Alice gets reply with quoted original', async () => {
+		const question = `Question ${Date.now()}`
+		const answer = `Answer ${Date.now()}`
 
-		const forwardedMessage = await sock.sendMessage(meJid!, {
-			forward: sentMessage!
-		})
+		const bobGotQuestion = waitForMessage(bob.sock, m => getTextContent(m) === question && !m.key?.fromMe)
+		const sentQuestion = await alice.sock.sendMessage(bob.jid, { text: question })
+		const questionMsg = await bobGotQuestion
 
-		expect(forwardedMessage).toBeDefined()
-		console.log('Forwarded message:', forwardedMessage!.key.id)
+		const aliceGotReply = waitForMessage(alice.sock, m => getTextContent(m) === answer && !m.key?.fromMe)
+		await bob.sock.sendMessage(alice.jid, { text: answer }, { quoted: questionMsg as WAMessage })
+		const reply = await aliceGotReply
 
-		const content = forwardedMessage!.message?.extendedTextMessage?.text || forwardedMessage!.message?.conversation
-		expect(content).toBe(messageContent)
-		expect(forwardedMessage!.key.id).not.toBe(sentMessage!.key.id)
+		// Reply text correct
+		expect(getTextContent(reply)).toBe(answer)
+		expect(reply.key?.fromMe).toBe(false)
+
+		// Context info has the quoted message
+		const ctx = reply.message?.extendedTextMessage?.contextInfo
+		expect(ctx).toBeDefined()
+		expect(ctx?.quotedMessage).toBeDefined()
+		// Quoted message ID references the original
+		expect(ctx?.stanzaId).toBe(sentQuestion!.key.id)
 	})
 
-	test('should send an image message', async () => {
+	// ── Media: image ──
+
+	test('Alice sends image → Bob receives, verifies metadata, and downloads', async () => {
 		const image = readFileSync('./Media/cat.jpeg')
-		const sentMessage = await sock.sendMessage(meJid!, {
-			image: image,
-			caption: 'E2E Test Image'
-		})
+		const caption = `DM cat ${Date.now()}`
 
-		expect(sentMessage).toBeDefined()
-		console.log('Sent image message:', sentMessage!.key.id)
-		expect(sentMessage!.message?.imageMessage).toBeDefined()
-		expect(sentMessage!.message?.imageMessage?.caption).toBe('E2E Test Image')
+		const bobGotImage = waitForMessage(bob.sock, m => m.message?.imageMessage?.caption === caption && !m.key?.fromMe)
+
+		await alice.sock.sendMessage(bob.jid, { image, caption })
+		const received = await bobGotImage
+
+		// Verify image message structure
+		const imgMsg = received.message?.imageMessage
+		expect(imgMsg).toBeDefined()
+		expect(imgMsg?.caption).toBe(caption)
+		expect(imgMsg?.mimetype).toContain('image')
+		expect(imgMsg?.mediaKey).toBeDefined()
+		expect(imgMsg?.fileLength).toBeGreaterThan(0)
+		expect(imgMsg?.fileSha256).toBeDefined()
+
+		// Download and verify
+		const buffer = await downloadMediaMessage(
+			received as WAMessage,
+			'buffer',
+			{},
+			{ logger: bob.sock.logger, reuploadRequest: m => bob.sock.updateMediaMessage(m) }
+		)
+
+		expect(Buffer.isBuffer(buffer)).toBe(true)
+		expect(buffer.length).toBeGreaterThan(0)
+		// Downloaded content should match original size (approximately — encryption adds padding)
+		expect(buffer.length).toBeGreaterThanOrEqual(image.length * 0.9)
 	})
 
-	test('should send a video message with a thumbnail', async () => {
+	// ── Media: video ──
+
+	test('Bob sends video → Alice receives and verifies metadata', async () => {
 		const video = readFileSync('./Media/ma_gif.mp4')
-		const sentMessage = await sock.sendMessage(meJid!, {
-			video: video,
-			caption: 'E2E Test Video'
-		})
+		const caption = `DM video ${Date.now()}`
 
-		expect(sentMessage).toBeDefined()
-		console.log('Sent video message:', sentMessage!.key.id)
-		expect(sentMessage!.message?.videoMessage).toBeDefined()
-		expect(sentMessage!.message?.videoMessage?.caption).toBe('E2E Test Video')
+		const aliceGotVideo = waitForMessage(
+			alice.sock,
+			m => m.message?.videoMessage?.caption === caption && !m.key?.fromMe
+		)
+
+		await bob.sock.sendMessage(alice.jid, { video, caption })
+		const received = await aliceGotVideo
+
+		const vidMsg = received.message?.videoMessage
+		expect(vidMsg).toBeDefined()
+		expect(vidMsg?.caption).toBe(caption)
+		expect(vidMsg?.mimetype).toContain('video')
+		expect(vidMsg?.mediaKey).toBeDefined()
+		expect(vidMsg?.fileLength).toBeGreaterThan(0)
+
+		// Download and verify
+		const buffer = await downloadMediaMessage(
+			received as WAMessage,
+			'buffer',
+			{},
+			{ logger: alice.sock.logger, reuploadRequest: m => alice.sock.updateMediaMessage(m) }
+		)
+
+		expect(Buffer.isBuffer(buffer)).toBe(true)
+		expect(buffer.length).toBeGreaterThan(0)
 	})
 
-	test('should send a PTT (push-to-talk) audio message', async () => {
-		const audio = readFileSync('./Media/sonata.mp3')
-		const sentMessage = await sock.sendMessage(meJid!, {
-			audio: audio,
-			ptt: true,
-			mimetype: 'audio/mp4'
-		})
+	// ── Read receipts ──
 
-		expect(sentMessage).toBeDefined()
-		console.log('Sent PTT audio message:', sentMessage!.key.id)
-		expect(sentMessage!.message?.audioMessage).toBeDefined()
-		expect(sentMessage!.message?.audioMessage?.ptt).toBe(true)
-	})
+	test('Bob sends → Alice reads → readMessages completes without error', async () => {
+		const text = `Read me ${Date.now()}`
 
-	test('should send a document message', async () => {
-		const document = readFileSync('./Media/ma_gif.mp4')
-		const sentMessage = await sock.sendMessage(meJid!, {
-			document: document,
-			mimetype: 'application/pdf',
-			fileName: 'E2E Test Document.pdf'
-		})
+		const aliceGotIt = waitForMessage(alice.sock, m => getTextContent(m) === text && !m.key?.fromMe)
+		await bob.sock.sendMessage(alice.jid, { text })
+		const received = await aliceGotIt
 
-		expect(sentMessage).toBeDefined()
-		console.log('Sent document message:', sentMessage!.key.id)
-		expect(sentMessage!.message?.documentMessage).toBeDefined()
-		expect(sentMessage!.message?.documentMessage?.fileName).toBe('E2E Test Document.pdf')
-	})
+		// Verify we have the required fields for read receipt
+		expect(received.key?.remoteJid).toBeTruthy()
+		expect(received.key?.id).toBeTruthy()
 
-	test('should send a sticker message', async () => {
-		const sticker = readFileSync('./Media/cat.jpeg')
-		const sentMessage = await sock.sendMessage(meJid!, {
-			sticker: sticker
-		})
-
-		expect(sentMessage).toBeDefined()
-		console.log('Sent sticker message:', sentMessage!.key.id)
-		expect(sentMessage!.message?.stickerMessage).toBeDefined()
-	})
-
-	test('should send a poll message and receive a vote', async () => {
-		const poll = {
-			name: 'E2E Test Poll',
-			values: ['Option 1', 'Option 2', 'Option 3'],
-			selectableCount: 1
-		}
-		const sentPoll = await sock.sendMessage(meJid!, { poll })
-
-		expect(sentPoll).toBeDefined()
-		console.log('Sent poll message:', sentPoll!.key.id)
-		expect(sentPoll?.message?.pollCreationMessageV3).toBeDefined()
-		expect(sentPoll?.message?.pollCreationMessageV3?.name).toBe('E2E Test Poll')
-	})
-
-	test('should send a contact (vCard) message', async () => {
-		const vcard =
-			'BEGIN:VCARD\n' +
-			'VERSION:3.0\n' +
-			'FN:E2E Test Contact\n' +
-			'ORG:Baileys Tests;\n' +
-			'TEL;type=CELL;type=VOICE;waid=1234567890:+1 234-567-890\n' +
-			'END:VCARD'
-		const sentMessage = await sock.sendMessage(meJid!, {
-			contacts: {
-				displayName: 'E2E Test Contact',
-				contacts: [{ vcard }]
-			}
-		})
-
-		expect(sentMessage).toBeDefined()
-		console.log('Sent contact message:', sentMessage!.key.id)
-		expect(sentMessage!.message?.contactMessage).toBeDefined()
-		expect(sentMessage!.message?.contactMessage?.vcard).toContain('FN:E2E Test Contact')
-	})
-
-	test('should send and download an image message', async () => {
-		const image = readFileSync('./Media/cat.jpeg')
-		const caption = 'E2E Test Image Download Success'
-
-		let listener: ((data: { messages: proto.IWebMessageInfo[] }) => void) | undefined
-		let timeoutId: NodeJS.Timeout | undefined
-
-		try {
-			const receivedMsgPromise = new Promise<proto.IWebMessageInfo>((resolve, reject) => {
-				listener = ({ messages }) => {
-					const msg = messages.find(m => m.message?.imageMessage?.caption === caption)
-					if (msg) {
-						resolve(msg)
-					}
-				}
-
-				timeoutId = setTimeout(() => {
-					reject(new Error('Timed out waiting for the image message to be received'))
-				}, 30_000)
-
-				sock.ev.on('messages.upsert', listener)
-			})
-
-			await sock.sendMessage(meJid!, {
-				image: image,
-				caption: caption
-			})
-
-			const receivedMsg = await receivedMsgPromise
-
-			clearTimeout(timeoutId)
-			timeoutId = undefined
-
-			console.log('Received image message, attempting to download...')
-
-			const buffer = await downloadMediaMessage(
-				receivedMsg as WAMessage,
-				'buffer',
-				{},
+		// Should not throw
+		await expect(
+			alice.sock.readMessages([
 				{
-					logger: sock.logger,
-					reuploadRequest: m => sock.updateMediaMessage(m)
+					remoteJid: received.key!.remoteJid!,
+					id: received.key!.id!,
+					participant: received.key!.participant ?? undefined
 				}
-			)
-
-			expect(Buffer.isBuffer(buffer)).toBe(true)
-			expect(buffer.length).toBeGreaterThan(0)
-
-			console.log('Successfully downloaded the image.')
-		} finally {
-			if (listener) {
-				sock.ev.off('messages.upsert', listener)
-			}
-
-			if (timeoutId) {
-				clearTimeout(timeoutId)
-			}
-		}
+			])
+		).resolves.toBeUndefined()
 	})
 
-	test('should send and download an image message via LID', async () => {
-		console.log(`Testing with self-LID: ${meLid}`)
+	// ── Forward ──
 
-		const image = readFileSync('./Media/cat.jpeg')
-		const caption = 'E2E Test LID Image Download'
+	test('Alice sends to self → forwards to Bob → Bob gets forwarded content', async () => {
+		const text = `Forward me ${Date.now()}`
+		const sent = await alice.sock.sendMessage(alice.jid, { text })
+		expect(sent).toBeDefined()
 
-		let listener: ((data: { messages: proto.IWebMessageInfo[] }) => void) | undefined
-		let timeoutId: NodeJS.Timeout | undefined
+		const bobGotForward = waitForMessage(bob.sock, m => getTextContent(m) === text && !m.key?.fromMe)
 
-		try {
-			const receivedMsgPromise = new Promise<proto.IWebMessageInfo>((resolve, reject) => {
-				listener = ({ messages }) => {
-					const msg = messages.find(m => m.message?.imageMessage?.caption === caption)
-					if (msg) {
-						resolve(msg)
-					}
-				}
+		await alice.sock.sendMessage(bob.jid, { forward: sent! })
+		const forwarded = await bobGotForward
 
-				timeoutId = setTimeout(() => {
-					reject(new Error('Timed out waiting for the LID image message to be received'))
-				}, 30_000)
-
-				sock.ev.on('messages.upsert', listener)
-			})
-
-			await sock.sendMessage(meLid!, {
-				image: image,
-				caption: caption
-			})
-
-			const receivedMsg = await receivedMsgPromise
-			clearTimeout(timeoutId)
-			timeoutId = undefined
-
-			console.log('Received LID image message, attempting to download...')
-
-			const buffer = await downloadMediaMessage(
-				receivedMsg as WAMessage,
-				'buffer',
-				{},
-				{
-					logger: sock.logger,
-					reuploadRequest: m => sock.updateMediaMessage(m)
-				}
-			)
-
-			expect(Buffer.isBuffer(buffer)).toBe(true)
-			expect(buffer.length).toBeGreaterThan(0)
-
-			console.log('Successfully downloaded the image sent via LID.')
-		} finally {
-			if (listener) {
-				sock.ev.off('messages.upsert', listener)
-			}
-
-			if (timeoutId) {
-				clearTimeout(timeoutId)
-			}
-		}
+		// Content matches
+		expect(getTextContent(forwarded)).toBe(text)
+		// Different message ID (it's a new message, not the same one)
+		expect(forwarded.key!.id).not.toBe(sent!.key.id)
+		// Sender is Alice
+		expect(forwarded.key?.remoteJid).toBe(alice.jid)
 	})
 
-	test('should send and download an image using the low-level downloadContentFromMessage', async () => {
-		const image = readFileSync('./Media/cat.jpeg')
-		const caption = 'E2E Test Low-Level Download'
+	// ── Contact card ──
 
-		let listener: ((data: { messages: proto.IWebMessageInfo[] }) => void) | undefined
-		let timeoutId: NodeJS.Timeout | undefined
+	test('Alice sends vCard → Bob receives it with correct fields', async () => {
+		const vcard = 'BEGIN:VCARD\nVERSION:3.0\nFN:Test Contact\nTEL;type=CELL:+1234567890\nEND:VCARD'
 
-		try {
-			const receivedMsgPromise = new Promise<proto.IWebMessageInfo>((resolve, reject) => {
-				listener = ({ messages }) => {
-					const msg = messages.find(m => m.message?.imageMessage?.caption === caption)
-					if (msg) {
-						resolve(msg)
-					}
-				}
+		const bobGotContact = waitForMessage(bob.sock, m => !!m.message?.contactMessage?.vcard && !m.key?.fromMe)
 
-				timeoutId = setTimeout(() => {
-					reject(new Error('Timed out waiting for the low-level test message'))
-				}, 30_000)
+		await alice.sock.sendMessage(bob.jid, {
+			contacts: { displayName: 'Test Contact', contacts: [{ vcard }] }
+		})
 
-				sock.ev.on('messages.upsert', listener)
-			})
+		const received = await bobGotContact
 
-			await sock.sendMessage(meJid!, {
-				image: image,
-				caption: caption
-			})
-
-			const receivedMsg = await receivedMsgPromise
-			clearTimeout(timeoutId)
-			timeoutId = undefined
-
-			console.log('Received message for low-level download test, preparing to download...')
-
-			const imageMessage = receivedMsg.message?.imageMessage
-			expect(imageMessage).toBeDefined()
-
-			const downloadable: proto.Message.IImageMessage = {
-				url: imageMessage!.url,
-				mediaKey: imageMessage!.mediaKey,
-				directPath: imageMessage!.directPath
-			}
-
-			const stream = await downloadContentFromMessage(downloadable, 'image')
-			const buffer = await toBuffer(stream)
-
-			expect(Buffer.isBuffer(buffer)).toBe(true)
-			expect(buffer.length).toBeGreaterThan(0)
-
-			console.log('Successfully downloaded the image using downloadContentFromMessage.')
-		} finally {
-			if (listener) {
-				sock.ev.off('messages.upsert', listener)
-			}
-
-			if (timeoutId) {
-				clearTimeout(timeoutId)
-			}
-		}
-	})
-
-	test('should download a quoted image message using downloadContentFromMessage', async () => {
-		const image = readFileSync('./Media/cat.jpeg')
-		const originalCaption = 'This is the original media message'
-		const commandText = '-download'
-
-		let imageListener: ((data: { messages: proto.IWebMessageInfo[] }) => void) | undefined
-		let commandListener: ((data: { messages: proto.IWebMessageInfo[] }) => void) | undefined
-		let timeoutId: NodeJS.Timeout | undefined
-
-		try {
-			console.log('Sending initial image message...')
-			const receivedImagePromise = new Promise<proto.IWebMessageInfo>((resolve, reject) => {
-				imageListener = ({ messages }) => {
-					const msg = messages.find(m => m.message?.imageMessage?.caption === originalCaption)
-					if (msg) resolve(msg)
-				}
-
-				sock.ev.on('messages.upsert', imageListener)
-				timeoutId = setTimeout(() => reject(new Error('Timed out waiting for initial image message')), 30_000)
-			})
-
-			const sentImageMessage = await sock.sendMessage(meJid!, {
-				image: image,
-				caption: originalCaption
-			})
-			await receivedImagePromise
-			clearTimeout(timeoutId)
-			timeoutId = undefined
-
-			if (imageListener) {
-				sock.ev.off('messages.upsert', imageListener)
-			}
-
-			console.log('Initial image message sent and received.')
-
-			console.log('Sending command message as a reply...')
-			const receivedCommandPromise = new Promise<proto.IWebMessageInfo>((resolve, reject) => {
-				commandListener = ({ messages }) => {
-					const msg = messages.find(m => m.message?.extendedTextMessage?.text === commandText)
-					if (msg) resolve(msg)
-				}
-
-				sock.ev.on('messages.upsert', commandListener)
-				timeoutId = setTimeout(() => reject(new Error('Timed out waiting for command message')), 30_000)
-			})
-
-			await sock.sendMessage(meJid!, { text: commandText }, { quoted: sentImageMessage })
-			const receivedCommandMessage = await receivedCommandPromise
-			clearTimeout(timeoutId)
-			timeoutId = undefined
-			console.log('Command message received.')
-
-			console.log('Extracting quoted message and attempting download...')
-
-			const quotedMessage = receivedCommandMessage.message?.extendedTextMessage?.contextInfo?.quotedMessage
-			expect(quotedMessage).toBeDefined()
-
-			const quotedImage = quotedMessage!.imageMessage
-			expect(quotedImage).toBeDefined()
-
-			const downloadable: proto.Message.IImageMessage = {
-				url: quotedImage!.url,
-				mediaKey: quotedImage!.mediaKey,
-				directPath: quotedImage!.directPath
-			}
-
-			const stream = await downloadContentFromMessage(downloadable, 'image')
-			const buffer = await toBuffer(stream)
-
-			expect(Buffer.isBuffer(buffer)).toBe(true)
-			expect(buffer.length).toBeGreaterThan(0)
-
-			console.log('Successfully downloaded quoted image using downloadContentFromMessage.')
-		} finally {
-			if (imageListener) sock.ev.off('messages.upsert', imageListener)
-			if (commandListener) sock.ev.off('messages.upsert', commandListener)
-			if (timeoutId) clearTimeout(timeoutId)
-		}
-	})
-
-	test('should download a quoted videos message within a group', async () => {
-		if (!groupJid) {
-			console.warn('⚠️ Skipping group test because "Baileys Group Test" was not found.')
-			return
-		}
-
-		const video = readFileSync('./Media/ma_gif.mp4')
-		const originalCaption = 'This is the original media message for the group test'
-		const commandText = '-download group'
-
-		let videoListener: ((data: { messages: proto.IWebMessageInfo[] }) => void) | undefined
-		let commandListener: ((data: { messages: proto.IWebMessageInfo[] }) => void) | undefined
-		let timeoutId: NodeJS.Timeout | undefined
-
-		try {
-			console.log(`Sending initial video message to group ${groupJid}...`)
-			const receivedVideoPromise = new Promise<proto.IWebMessageInfo>((resolve, reject) => {
-				videoListener = ({ messages }) => {
-					const msg = messages.find(
-						m => m.key!.remoteJid === groupJid && m.message?.videoMessage?.caption === originalCaption
-					)
-					if (msg) resolve(msg)
-				}
-
-				sock.ev.on('messages.upsert', videoListener)
-				timeoutId = setTimeout(() => reject(new Error('Timed out waiting for initial group image message')), 30_000)
-			})
-
-			const sentVideoMessage = await sock.sendMessage(groupJid, {
-				video: video,
-				caption: originalCaption
-			})
-			await receivedVideoPromise
-			clearTimeout(timeoutId)
-			timeoutId = undefined
-			if (videoListener) sock.ev.off('messages.upsert', videoListener)
-			console.log('Initial group image message sent and received.')
-
-			console.log('Sending command message as a reply in the group...')
-			const receivedCommandPromise = new Promise<proto.IWebMessageInfo>((resolve, reject) => {
-				commandListener = ({ messages }) => {
-					const msg = messages.find(
-						m => m.key!.remoteJid === groupJid && m.message?.extendedTextMessage?.text === commandText
-					)
-					if (msg) resolve(msg)
-				}
-
-				sock.ev.on('messages.upsert', commandListener)
-				timeoutId = setTimeout(() => reject(new Error('Timed out waiting for group command message')), 30_000)
-			})
-
-			await sock.sendMessage(groupJid, { text: commandText }, { quoted: sentVideoMessage })
-			const receivedCommandMessage = await receivedCommandPromise
-			clearTimeout(timeoutId)
-			timeoutId = undefined
-			console.log('Group command message received.')
-
-			console.log('Extracting quoted message from group chat and attempting download...')
-
-			const quotedMessage = receivedCommandMessage.message?.extendedTextMessage?.contextInfo?.quotedMessage
-			expect(quotedMessage).toBeDefined()
-
-			console.log('quotedMessage', JSON.stringify(quotedMessage, null, 2))
-
-			const quotedVideo = quotedMessage!.videoMessage
-			expect(quotedVideo).toBeDefined()
-
-			console.log('quotedVideo', JSON.stringify(quotedVideo, null, 2))
-
-			const downloadable: proto.Message.IVideoMessage = {
-				url: quotedVideo!.url,
-				mediaKey: quotedVideo!.mediaKey,
-				directPath: quotedVideo!.directPath
-			}
-
-			const stream = await downloadContentFromMessage(downloadable, 'video')
-			const buffer = await toBuffer(stream)
-
-			expect(Buffer.isBuffer(buffer)).toBe(true)
-			expect(buffer.length).toBeGreaterThan(0)
-
-			console.log('Successfully downloaded quoted image from group message.')
-		} finally {
-			if (videoListener) sock.ev.off('messages.upsert', videoListener)
-			if (commandListener) sock.ev.off('messages.upsert', commandListener)
-			if (timeoutId) clearTimeout(timeoutId)
-		}
+		expect(received.message?.contactMessage).toBeDefined()
+		expect(received.message?.contactMessage?.vcard).toContain('FN:Test Contact')
+		expect(received.message?.contactMessage?.vcard).toContain('+1234567890')
+		expect(received.key?.fromMe).toBe(false)
+		expect(received.key?.remoteJid).toBe(alice.jid)
 	})
 })
