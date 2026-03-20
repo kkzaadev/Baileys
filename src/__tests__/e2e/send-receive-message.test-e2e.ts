@@ -63,6 +63,7 @@ async function createTestClient(label: string): Promise<{
 
 async function destroyTestClient(client: { sock: WASocket; authFolder: string }) {
 	try {
+		client.sock.setAutoReconnect(false)
 		await client.sock.end()
 	} catch {
 		/* ignore */

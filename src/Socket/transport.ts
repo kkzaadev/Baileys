@@ -7,6 +7,8 @@ interface TransportConfig {
 	agent?: unknown
 	fetchAgent?: unknown
 	logger: ILogger
+	/** RequestInit options passed to fetch() — use `dispatcher` for proxy/TLS config */
+	options?: RequestInit
 }
 
 export const makeTransport = (config: TransportConfig): JsTransportCallbacks => {
@@ -83,7 +85,10 @@ export const makeHttpClient = (config: TransportConfig): JsHttpClientConfig => (
 	async execute(url, method, headers, body) {
 		const fetchOpts: RequestInit = { method, headers }
 		if (body) fetchOpts.body = body as unknown as BodyInit
-		if (config.fetchAgent) fetchOpts.dispatcher = config.fetchAgent as unknown
+		// Pass dispatcher from config.options for proxy/TLS support.
+		// Users should set `options: { dispatcher: new undici.Agent(...) }` in SocketConfig.
+		// Note: Node.js fetch() only accepts undici.Agent as dispatcher, NOT https.Agent.
+		if (config.options?.dispatcher) fetchOpts.dispatcher = config.options.dispatcher
 
 		const resp = await fetch(url, fetchOpts)
 		const buf = new Uint8Array(await resp.arrayBuffer())
