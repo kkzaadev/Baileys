@@ -1,75 +1,16 @@
-import { Mutex } from 'async-mutex'
-import { mkdir, readFile, stat, writeFile } from 'fs/promises'
-import { join } from 'path'
-import type { AuthenticationCreds, AuthenticationState } from '../Types'
-import { BufferJSON } from './generics'
+import { mkdir, stat } from 'fs/promises'
+import type { AuthenticationState } from '../Types'
 import { useBridgeStore } from './use-bridge-store'
 
-// We need to lock files due to the fact that we are using async functions to read and write files
-// https://github.com/WhiskeySockets/Baileys/issues/794
-// https://github.com/nodejs/node/issues/26338
-// Use a Map to store mutexes for each file path
-const fileLocks = new Map<string, Mutex>()
-
-// Get or create a mutex for a specific file path
-const getFileLock = (path: string): Mutex => {
-	let mutex = fileLocks.get(path)
-	if (!mutex) {
-		mutex = new Mutex()
-		fileLocks.set(path, mutex)
-	}
-
-	return mutex
-}
-
-const defaultCreds = (): AuthenticationCreds => ({
-	registered: false
-})
-
 /**
- * stores the full authentication state in a single folder.
- * Far more efficient than singlefileauthstate
+ * Creates a file-based authentication state for the Rust bridge.
  *
- * Again, I wouldn't endorse this for any production level use other than perhaps a bot.
- * Would recommend writing an auth state for use with a proper SQL or No-SQL DB
- * */
-export const useMultiFileAuthState = async (
-	folder: string
-): Promise<{ state: AuthenticationState; saveCreds: () => Promise<void> }> => {
-	const fixFileName = (file?: string) => file?.replace(/\//g, '__')?.replace(/:/g, '-')
-
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	const writeData = async (data: any, file: string) => {
-		const filePath = join(folder, fixFileName(file)!)
-		const mutex = getFileLock(filePath)
-
-		return mutex.acquire().then(async release => {
-			try {
-				await writeFile(filePath, JSON.stringify(data, BufferJSON.replacer))
-			} finally {
-				release()
-			}
-		})
-	}
-
-	const readData = async (file: string) => {
-		try {
-			const filePath = join(folder, fixFileName(file)!)
-			const mutex = getFileLock(filePath)
-
-			return await mutex.acquire().then(async release => {
-				try {
-					const data = await readFile(filePath, { encoding: 'utf-8' })
-					return JSON.parse(data, BufferJSON.reviver)
-				} finally {
-					release()
-				}
-			})
-		} catch {
-			return null
-		}
-	}
-
+ * All crypto keys, sessions, and identity are managed by the Rust engine
+ * and persisted as `.bin` files via the bridge store. No `creds.json` needed.
+ *
+ * @param folder Directory to store bridge state files
+ */
+export const useMultiFileAuthState = async (folder: string): Promise<{ state: AuthenticationState }> => {
 	const folderInfo = await stat(folder).catch(() => {})
 	if (folderInfo) {
 		if (!folderInfo.isDirectory()) {
@@ -81,16 +22,9 @@ export const useMultiFileAuthState = async (
 		await mkdir(folder, { recursive: true })
 	}
 
-	const creds: AuthenticationCreds = (await readData('creds.json')) || defaultCreds()
 	const store = await useBridgeStore(folder)
 
 	return {
-		state: {
-			creds,
-			store
-		},
-		saveCreds: async () => {
-			return writeData(creds, 'creds.json')
-		}
+		state: { store }
 	}
 }

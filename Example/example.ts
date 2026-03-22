@@ -34,11 +34,7 @@ const question = (text: string) => new Promise<string>((resolve) => rl.question(
 
 // start a connection
 const startSock = async() => {
-	const { state, saveCreds } = await useMultiFileAuthState('baileys_auth_info')
-	// NOTE: For unit testing purposes only
-	if (process.env.ADV_SECRET_KEY) {
-		state.creds.advSecretKey = process.env.ADV_SECRET_KEY
-	}
+	const { state } = await useMultiFileAuthState('baileys_auth_info')
 	// fetch latest version of WA Web
 	const { version, isLatest } = await fetchLatestWaWebVersion()
 	logger.debug({version: version.join('.'), isLatest}, `using latest WA version`)
@@ -47,7 +43,7 @@ const startSock = async() => {
 		version,
 		logger,
 		waWebSocketUrl: process.env.SOCKET_URL ?? DEFAULT_CONNECTION_CONFIG.waWebSocketUrl,
-		auth: state, // includes creds and bridge store for persistence
+		auth: state,
 	})
 
 	// the process function lets you process all events that just occurred
@@ -79,12 +75,6 @@ const startSock = async() => {
 				}
 
 				logger.debug(update, 'connection update')
-			}
-
-			// credentials updated -- save them
-			if(events['creds.update']) {
-				await saveCreds()
-				logger.debug({}, 'creds save triggered')
 			}
 
 			if(events['labels.association']) {
@@ -145,7 +135,7 @@ const startSock = async() => {
                   .filter(s => s.space_used_size > 0)
                   .sort((a, b) => b.space_used_size - a.space_used_size)
                 const wasm = getWasmMemoryBytes()
-                const diag = await sock.waClient!.getMemoryDiagnostics() as Record<string, number>
+                const diag = await sock.waClient!.getMemoryDiagnostics()
                 const wasmEntries = Object.entries(diag)
                   .filter(([, v]) => v > 0)
                   .sort(([, a], [, b]) => b - a)

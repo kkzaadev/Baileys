@@ -122,7 +122,8 @@ export type SignalAuthState = {
 }
 
 export type AuthenticationState = {
-	creds: AuthenticationCreds
+	/** @deprecated All credentials are managed by the Rust bridge. This field is ignored. */
+	creds?: AuthenticationCreds
 	/** @deprecated Signal keys are managed by the Rust bridge. This field is unused. */
 	keys?: SignalKeyStore
 	/** Bridge storage for persistent WASM state. Auto-created by useMultiFileAuthState. */

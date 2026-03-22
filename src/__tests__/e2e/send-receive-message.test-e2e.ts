@@ -32,15 +32,13 @@ async function createTestClient(label: string): Promise<{
 	authFolder: string
 }> {
 	const authFolder = mkdtempSync(join(tmpdir(), `baileys-e2e-${label}-`))
-	const { state, saveCreds } = await useMultiFileAuthState(authFolder)
+	const { state } = await useMultiFileAuthState(authFolder)
 
 	const sock = makeWASocket({
 		auth: state,
 		waWebSocketUrl: socketUrl,
 		logger: logger.child({ user: label })
 	})
-
-	sock.ev.on('creds.update', saveCreds)
 
 	const jid = await new Promise<string>((resolve, reject) => {
 		sock.ev.on('connection.update', update => {

@@ -76,13 +76,18 @@ export async function useBridgeStore(folder: string): Promise<NonNullable<Authen
 		async set(store: string, key: string, value: Uint8Array): Promise<void> {
 			const cacheKey = `${store}\0${key}`
 
+			// Skip write if value is identical to cached version
+			const prev = cache.get(cacheKey)
+			if (prev?.length === value.length && prev.every((b, i) => b === value[i])) {
+				return
+			}
+
 			touchCache(cacheKey, value)
 
 			// Signal sessions and identity keys must be flushed immediately —
 			// losing a ratchet step on crash causes undecryptable messages.
 			const critical = store === 'session' || store === 'identity' || store === 'device'
 			if (critical) {
-				// Cancel any pending coalesced write for this key
 				const existing = pendingWrites.get(cacheKey)
 				if (existing) {
 					clearTimeout(existing.timer)

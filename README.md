@@ -31,10 +31,8 @@ import makeWASocket from 'baileyrs'
 import makeWASocket, { DisconnectReason, useMultiFileAuthState } from 'baileyrs'
 import { Boom } from '@hapi/boom'
 
-const { state, saveCreds } = await useMultiFileAuthState('auth_info')
+const { state } = await useMultiFileAuthState('auth_info')
 const sock = makeWASocket({ auth: state })
-
-sock.ev.on('creds.update', saveCreds)
 
 sock.ev.on('connection.update', ({ connection, lastDisconnect }) => {
     if (connection === 'close') {
@@ -82,19 +80,17 @@ if (!sock.isLoggedIn) {
 
 ## Auth State
 
-All crypto keys and Signal sessions are managed by the Rust bridge. The JS auth state only tracks user identity (`me`) for reconnection.
+All state — crypto keys, Signal sessions, device identity, and push name — is managed and persisted by the Rust bridge. No `creds.json`, no `saveCreds` callback.
 
 ```ts
 import { useMultiFileAuthState } from 'baileyrs'
 
-const { state, saveCreds } = await useMultiFileAuthState('auth_folder')
+const { state } = await useMultiFileAuthState('auth_folder')
 const sock = makeWASocket({ auth: state })
-sock.ev.on('creds.update', saveCreds)
 ```
 
 Files created in `auth_folder/`:
-- `creds.json` — User identity (me, registered status)
-- `device-*.bin` — Rust device state (noise keys, identity, etc.)
+- `device-*.bin` — Rust device state (noise keys, identity, push name, etc.)
 - `session-*.bin` — Signal sessions
 - `identity-*.bin` — Signal identity keys
 - `pre-key-*.bin` — Signal pre-keys
@@ -381,14 +377,18 @@ await sock.newsletterSubscribe(jid)
 await sock.newsletterUnsubscribe(jid)
 ```
 
-## WASM Memory Monitoring
+## Memory Monitoring
 
 ```ts
 import { getWasmMemoryBytes } from 'whatsapp-rust-bridge'
 
-// Get WASM linear memory usage
+// WASM linear memory (total reserved)
 const wasmBytes = getWasmMemoryBytes()
 console.log(`WASM memory: ${(wasmBytes / 1024 / 1024).toFixed(1)} MB`)
+
+// Detailed cache/collection diagnostics from the Rust engine
+const diag = await sock.waClient!.getMemoryDiagnostics()
+console.log(diag) // { signalCacheSessions, groupCache, deviceCache, ... }
 ```
 
 ## Socket Config
@@ -402,7 +402,6 @@ const sock = makeWASocket({
     waWebSocketUrl: 'wss://web.whatsapp.com/ws/chat',
     connectTimeoutMs: 20_000,
     keepAliveIntervalMs: 30_000,
-    agent: httpsAgent,
 
     // Identity
     version: [2, 3000, 1035194821],
@@ -412,7 +411,7 @@ const sock = makeWASocket({
     emitOwnEvents: true,
     shouldIgnoreJid: jid => false,
 
-    // Proxy
+    // Proxy (for fetch/HTTP requests — uses undici dispatcher)
     options: { dispatcher: undiciAgent },
 
     // Cache (Rust-side, see CacheConfig type)

@@ -60,10 +60,6 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 
 		ev.emit('connection.update', { connection: 'connecting' } as Partial<ConnectionState>)
 
-		if (auth.creds.me) {
-			user = { id: auth.creds.me.id, lid: auth.creds.me.lid }
-		}
-
 		const bridgeStore = auth.store ?? null
 		client = await createWhatsAppClient(
 			makeTransport(fullConfig),
@@ -81,6 +77,12 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		// Pass user-configured WA version to bridge
 		const [major, minor, patch] = fullConfig.version
 		client.setVersion(major, minor, patch)
+
+		// Restore user identity from Rust's persisted device state
+		const [jid, lid] = await Promise.all([client.getJid(), client.getLid()])
+		if (jid) {
+			user = { id: jid, lid: lid ?? undefined }
+		}
 
 		client.run()
 	}
@@ -117,12 +119,8 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		}
 	}
 
-	// Logout — disconnect, clear creds, and emit loggedOut
 	const logout = async (msg?: string) => {
-		const creds = auth.creds
-		creds.me = undefined
-		creds.registered = false
-		ev.emit('creds.update', creds)
+		user = undefined
 		ev.emit('connection.update', {
 			connection: 'close',
 			lastDisconnect: {

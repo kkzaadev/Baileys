@@ -3,36 +3,6 @@ import { DEFAULT_CONNECTION_CONFIG } from '../Defaults'
 const baileysVersion = DEFAULT_CONNECTION_CONFIG.version
 import type { WAVersion } from '../Types'
 
-export const BufferJSON = {
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	replacer: (k: any, value: any) => {
-		if (Buffer.isBuffer(value) || value instanceof Uint8Array || value?.type === 'Buffer') {
-			return { type: 'Buffer', data: Buffer.from(value?.data || value).toString('base64') }
-		}
-
-		return value
-	},
-
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	reviver: (_: any, value: any) => {
-		if (typeof value === 'object' && value !== null && value.type === 'Buffer' && typeof value.data === 'string') {
-			return Buffer.from(value.data, 'base64')
-		}
-
-		if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-			const keys = Object.keys(value)
-			if (keys.length > 0 && keys.every(k => !isNaN(parseInt(k, 10)))) {
-				const values = Object.values(value)
-				if (values.every(v => typeof v === 'number')) {
-					return Buffer.from(values)
-				}
-			}
-		}
-
-		return value
-	}
-}
-
 /** unix timestamp of a date in seconds */
 export const unixTimestampSeconds = (date: Date = new Date()) => Math.floor(date.getTime() / 1000)
 

@@ -56,11 +56,6 @@ export const makeEventHandler = (ctx: SocketContext) => {
 			case 'pair_success': {
 				const { id, lid } = event.data
 				ctx.setUser({ id, lid })
-				const creds = ctx.fullConfig.auth.creds
-				creds.me = { id, lid }
-				creds.registered = true
-				creds.platform = event.data.platform
-				ev.emit('creds.update', creds)
 				break
 			}
 
@@ -209,16 +204,8 @@ export const makeEventHandler = (ctx: SocketContext) => {
 				break
 			}
 
-			case 'self_push_name_updated': {
-				const d = event.data
-				const creds = ctx.fullConfig.auth.creds
-				if (d.new_name && creds.me) {
-					creds.me.name = d.new_name
-					ev.emit('creds.update', creds)
-				}
-
+			case 'self_push_name_updated':
 				break
-			}
 
 			// ── Presence ──
 			case 'presence': {
