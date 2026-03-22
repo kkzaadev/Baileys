@@ -1995,15 +1995,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@types/ws@npm:^8.0.0":
-  version: 8.18.1
-  resolution: "@types/ws@npm:8.18.1"
-  dependencies:
-    "@types/node": "npm:*"
-  checksum: 10c0/61aff1129143fcc4312f083bc9e9e168aa3026b7dd6e70796276dcfb2c8211c4292603f9c4864fae702f2ed86e4abd4d38aa421831c2fd7f856c931a481afbab
-  languageName: node
-  linkType: hard
-
 "@types/yargs-parser@npm:*":
   version: 21.0.3
   resolution: "@types/yargs-parser@npm:21.0.3"
@@ -2650,7 +2641,6 @@ __metadata:
     "@hapi/boom": "npm:^10.0.1"
     "@types/jest": "npm:^30.0.0"
     "@types/node": "npm:^20.9.0"
-    "@types/ws": "npm:^8.0.0"
     "@whiskeysockets/eslint-config": "npm:^1.0.0"
     async-mutex: "npm:^0.5.0"
     conventional-changelog: "npm:^7.1.1"
@@ -2672,8 +2662,7 @@ __metadata:
     typedoc: "npm:^0.27.9"
     typedoc-plugin-markdown: "npm:4.4.2"
     typescript: "npm:^5.8.2"
-    whatsapp-rust-bridge: "portal:../whatsapp-rust-bridge"
-    ws: "npm:^8.13.0"
+    whatsapp-rust-bridge: "npm:0.6.0-alpha.0"
   peerDependencies:
     audio-decode: ^2.1.3
     jimp: ^1.6.0
@@ -9159,11 +9148,12 @@ __metadata:
   languageName: node
   linkType: hard
 
-"whatsapp-rust-bridge@portal:../whatsapp-rust-bridge::locator=baileys%40workspace%3A.":
-  version: 0.0.0-use.local
-  resolution: "whatsapp-rust-bridge@portal:../whatsapp-rust-bridge::locator=baileys%40workspace%3A."
+"whatsapp-rust-bridge@npm:0.6.0-alpha.0":
+  version: 0.6.0-alpha.0
+  resolution: "whatsapp-rust-bridge@npm:0.6.0-alpha.0"
+  checksum: 10c0/8668026e73ce8a7271860418de1d108308be8607e8858160d22ea63aa160e00b8818b5822e2c0b4704ef1aa47bde730ccebad054829ad2820bbdd7562539a858
   languageName: node
-  linkType: soft
+  linkType: hard
 
 "whatwg-url@npm:^5.0.0":
   version: 5.0.0
@@ -9363,21 +9353,6 @@ __metadata:
     imurmurhash: "npm:^0.1.4"
     signal-exit: "npm:^4.0.1"
   checksum: 10c0/e8c850a8e3e74eeadadb8ad23c9d9d63e4e792bd10f4836ed74189ef6e996763959f1249c5650e232f3c77c11169d239cbfc8342fc70f3fe401407d23810505d
-  languageName: node
-  linkType: hard
-
-"ws@npm:^8.13.0":
-  version: 8.19.0
-  resolution: "ws@npm:8.19.0"
-  peerDependencies:
-    bufferutil: ^4.0.1
-    utf-8-validate: ">=5.0.2"
-  peerDependenciesMeta:
-    bufferutil:
-      optional: true
-    utf-8-validate:
-      optional: true
-  checksum: 10c0/4741d9b9bc3f9c791880882414f96e36b8b254e34d4b503279d6400d9a4b87a033834856dbdd94ee4b637944df17ea8afc4bce0ff4a1560d2166be8855da5b04
   languageName: node
   linkType: hard
 
