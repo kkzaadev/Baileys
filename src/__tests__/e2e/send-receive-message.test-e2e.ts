@@ -1,7 +1,6 @@
 import { Boom } from '@hapi/boom'
 import { jest } from '@jest/globals'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { Agent } from 'node:https'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import P from 'pino'
@@ -24,7 +23,6 @@ jest.setTimeout(60_000)
 type WASocket = ReturnType<typeof makeWASocket>
 
 const logger = P({ level: process.env.LOG_LEVEL ?? 'warn' })
-const agent = new Agent({ rejectUnauthorized: false })
 const socketUrl = process.env.SOCKET_URL ?? 'wss://127.0.0.1:8080/ws/chat'
 
 async function createTestClient(label: string): Promise<{
@@ -39,8 +37,7 @@ async function createTestClient(label: string): Promise<{
 	const sock = makeWASocket({
 		auth: state,
 		waWebSocketUrl: socketUrl,
-		logger: logger.child({ user: label }),
-		agent
+		logger: logger.child({ user: label })
 	})
 
 	sock.ev.on('creds.update', saveCreds)

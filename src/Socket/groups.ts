@@ -93,12 +93,7 @@ export const makeGroupMethods = (ctx: SocketContext) => ({
 	): Promise<string | undefined> => {
 		if (!msg.inviteCode || !msg.groupJid) return undefined
 		const adminJid = key.remoteJid || ''
-		return ctx.getClient().groupAcceptInviteV4(
-			msg.groupJid,
-			msg.inviteCode,
-			msg.inviteExpiration || 0,
-			adminJid
-		)
+		return ctx.getClient().groupAcceptInviteV4(msg.groupJid, msg.inviteCode, msg.inviteExpiration || 0, adminJid)
 	},
 
 	groupGetInviteInfo: async (code: string): Promise<GroupMetadata> => {

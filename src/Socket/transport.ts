@@ -1,18 +1,15 @@
 import type { JsHttpClientConfig, JsTransportCallbacks, JsTransportHandle } from 'whatsapp-rust-bridge'
-import WebSocket from 'ws'
 import type { ILogger } from '../Utils/logger'
 
 interface TransportConfig {
 	waWebSocketUrl: string | URL
-	agent?: unknown
-	fetchAgent?: unknown
 	logger: ILogger
 	/** RequestInit options passed to fetch() — use `dispatcher` for proxy/TLS config */
 	options?: RequestInit
 }
 
 export const makeTransport = (config: TransportConfig): JsTransportCallbacks => {
-	const { waWebSocketUrl, agent, logger } = config
+	const { waWebSocketUrl, logger } = config
 	let ws: WebSocket | undefined
 	let handle: JsTransportHandle | undefined
 	let disconnectTarget: WebSocket | undefined
@@ -21,41 +18,36 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 		connect(h: JsTransportHandle) {
 			handle = h
 			const url = typeof waWebSocketUrl === 'string' ? waWebSocketUrl : waWebSocketUrl.toString()
-			const wsOpts: WebSocket.ClientOptions = {}
-			if (agent) {
-				wsOpts.agent = agent as unknown as WebSocket.ClientOptions['agent']
-			}
 
 			disconnectTarget = ws
-			if (ws) ws.removeAllListeners()
 
-			const newWs = new WebSocket(url, wsOpts)
+			const newWs = new WebSocket(url)
 			newWs.binaryType = 'arraybuffer'
 			ws = newWs
 
 			return new Promise<void>((resolve, reject) => {
-				newWs.on('open', () => {
+				newWs.onopen = () => {
 					if (ws !== newWs) return
 					handle?.onConnected()
 					resolve()
-				})
-				newWs.on('message', (data: ArrayBuffer | Buffer) => {
+				}
+
+				newWs.onmessage = (event: MessageEvent) => {
 					if (ws !== newWs) return
-					const arr =
-						data instanceof ArrayBuffer
-							? new Uint8Array(data)
-							: new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
-					handle?.onData(arr)
-				})
-				newWs.on('close', () => {
+					const data = event.data as ArrayBuffer
+					handle?.onData(new Uint8Array(data))
+				}
+
+				newWs.onclose = () => {
 					if (ws !== newWs) return
 					handle?.onDisconnected()
-				})
-				newWs.on('error', (err: Error) => {
+				}
+
+				newWs.onerror = event => {
 					if (ws !== newWs) return
-					logger.error({ err }, 'WebSocket error')
-					reject(err)
-				})
+					logger.error({ err: event }, 'WebSocket error')
+					reject(new Error('WebSocket connection failed'))
+				}
 			})
 		},
 		send(data: Uint8Array) {
@@ -66,15 +58,18 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 		disconnect() {
 			const toClose = disconnectTarget ?? ws
 			if (toClose) {
-				// Fire onDisconnected BEFORE removing listeners — the Rust engine's
-				// read_messages_loop is waiting for this event to exit and reconnect.
+				// Fire onDisconnected BEFORE closing — the Rust engine's
+				// read_messages_loop needs this event to exit and reconnect.
 				handle?.onDisconnected()
-				toClose.removeAllListeners()
-				toClose.on('error', () => {})
+				// Remove handlers to prevent double-fire from the close event
+				toClose.onopen = null
+				toClose.onmessage = null
+				toClose.onclose = null
+				toClose.onerror = null
 				try {
 					toClose.close()
 				} catch {
-					toClose.terminate()
+					// already closed
 				}
 			}
 
@@ -88,9 +83,6 @@ export const makeHttpClient = (config: TransportConfig): JsHttpClientConfig => (
 	async execute(url, method, headers, body) {
 		const fetchOpts: RequestInit = { method, headers }
 		if (body) fetchOpts.body = body as unknown as BodyInit
-		// Pass dispatcher from config.options for proxy/TLS support.
-		// Users should set `options: { dispatcher: new undici.Agent(...) }` in SocketConfig.
-		// Note: Node.js fetch() only accepts undici.Agent as dispatcher, NOT https.Agent.
 		if (config.options?.dispatcher) fetchOpts.dispatcher = config.options.dispatcher
 
 		const resp = await fetch(url, fetchOpts)

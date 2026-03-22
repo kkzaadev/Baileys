@@ -1,4 +1,3 @@
-import type { Agent } from 'https'
 import type { URL } from 'url'
 import type { CacheConfig } from 'whatsapp-rust-bridge'
 import { proto } from '../../WAProto/index.js'
@@ -30,8 +29,6 @@ export type SocketConfig = {
 	defaultQueryTimeoutMs: number | undefined
 	/** ping-pong interval for WS connection */
 	keepAliveIntervalMs: number
-	/** proxy agent for WebSocket connection */
-	agent?: Agent
 	/** logger */
 	logger: ILogger
 	/** version to connect with */

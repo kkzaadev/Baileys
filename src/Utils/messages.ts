@@ -581,9 +581,7 @@ export const generateWAMessageContent = async (
 		const messageType = Object.keys(m)[0]! as Extract<keyof proto.IMessage, MessageWithContextInfo>
 		const key = m[messageType]
 		if (key) {
-			key.contextInfo = key.contextInfo
-				? Object.assign(key.contextInfo, message.contextInfo)
-				: message.contextInfo
+			key.contextInfo = key.contextInfo ? Object.assign(key.contextInfo, message.contextInfo) : message.contextInfo
 		}
 	}
 
