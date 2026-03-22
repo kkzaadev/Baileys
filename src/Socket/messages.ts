@@ -2,14 +2,12 @@ import { Boom } from '@hapi/boom'
 import type {
 	AnyMessageContent,
 	BaileysEventMap,
-	MediaConnInfo,
 	MessageGenerationOptions,
 	WAMessage,
 	WAMessageContent
 } from '../Types'
 import { WAProto } from '../Types'
 import { generateWAMessage, getContentType, normalizeMessageContent } from '../Utils/messages'
-import { getUrlFromDirectPath, getWAUploadToServer, setMediaHost } from '../Utils/messages-media'
 import { jidNormalizedUser } from '../WABinary/index'
 import type { SocketContext } from './types'
 
@@ -28,7 +26,7 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 	sendMessage: async (
 		jid: string,
 		content: AnyMessageContent,
-		options?: Omit<MessageGenerationOptions, 'upload' | 'logger' | 'userJid' | 'mediaInNote' | 'statusJidList'>
+		options?: Omit<MessageGenerationOptions, 'waClient' | 'logger' | 'userJid' | 'mediaInNote'>
 	): Promise<WAMessage | undefined> => {
 		await ctx.ensureInit()
 		const client = ctx.getClient()
@@ -40,11 +38,7 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 			...options,
 			logger: ctx.logger,
 			userJid,
-			upload: getWAUploadToServer(ctx.fullConfig, async (force = false) => {
-				const conn = (await client.getMediaConn(force)) as MediaConnInfo
-				if (conn.hosts[0]) setMediaHost(conn.hosts[0].hostname)
-				return conn
-			})
+			waClient: client
 		})
 
 		const msg = normalizeMessageContent(fullMsg.message)
@@ -71,11 +65,16 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 			}
 		}
 
-		// Send via bridge — use serde path with snake_case conversion in Rust.
-		// Strip messageContextInfo as it's handled internally by the bridge.
-		const cleanMsg = { ...msg } as Record<string, unknown>
-		delete cleanMsg.messageContextInfo
-		const msgId = await client.sendMessage(jid, cleanMsg)
+		// Rust handles messageContextInfo (reporting tokens, message secrets) internally
+		delete (msg as Record<string, unknown>).messageContextInfo
+
+		let msgId: string
+		if (jid === 'status@broadcast' && options?.statusJidList?.length) {
+			msgId = await client.sendStatusMessage(msg as Record<string, unknown>, options.statusJidList)
+		} else {
+			msgId = await client.sendMessage(jid, msg as Record<string, unknown>)
+		}
+
 		fullMsg.key.id = msgId || fullMsg.key.id
 
 		ctx.ev.emit('messages.upsert', {
@@ -110,9 +109,9 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 			key.participant ?? null
 		)
 
-		// Update the message with the new URL
+		// Update the message with the new direct path
+		// (download uses directPath via Rust bridge, url is informational)
 		mediaContent.directPath = newDirectPath
-		mediaContent.url = getUrlFromDirectPath(newDirectPath)
 
 		ctx.logger.debug({ directPath: newDirectPath, msgId: key.id }, 'media reupload successful')
 

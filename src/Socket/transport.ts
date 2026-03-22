@@ -66,6 +66,9 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 		disconnect() {
 			const toClose = disconnectTarget ?? ws
 			if (toClose) {
+				// Fire onDisconnected BEFORE removing listeners — the Rust engine's
+				// read_messages_loop is waiting for this event to exit and reconnect.
+				handle?.onDisconnected()
 				toClose.removeAllListeners()
 				toClose.on('error', () => {})
 				try {

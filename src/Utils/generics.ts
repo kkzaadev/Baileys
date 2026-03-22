@@ -1,9 +1,7 @@
 import { Boom } from '@hapi/boom'
-import { createHash, randomBytes } from 'crypto'
 import { DEFAULT_CONNECTION_CONFIG } from '../Defaults'
 const baileysVersion = DEFAULT_CONNECTION_CONFIG.version
 import type { WAVersion } from '../Types'
-import { jidDecode } from '../WABinary'
 
 export const BufferJSON = {
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -35,32 +33,8 @@ export const BufferJSON = {
 	}
 }
 
-export const generateRegistrationId = (): number => {
-	return Uint16Array.from(randomBytes(2))[0]! & 16383
-}
-
 /** unix timestamp of a date in seconds */
 export const unixTimestampSeconds = (date: Date = new Date()) => Math.floor(date.getTime() / 1000)
-
-// inspired from whatsmeow code
-export const generateMessageIDV2 = (userId?: string): string => {
-	const data = Buffer.alloc(8 + 20 + 16)
-	data.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 1000)))
-
-	if (userId) {
-		const id = jidDecode(userId)
-		if (id?.user) {
-			data.write(id.user, 8)
-			data.write('@c.us', 8 + id.user.length)
-		}
-	}
-
-	const random = randomBytes(16)
-	random.copy(data, 28)
-
-	const hash = createHash('sha256').update(data).digest()
-	return '3EB0' + hash.toString('hex').toUpperCase().substring(0, 18)
-}
 
 export const fetchLatestWaWebVersion = async (options: RequestInit = {}) => {
 	try {

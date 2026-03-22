@@ -1,7 +1,5 @@
 import { Boom } from '@hapi/boom'
-import { randomBytes } from 'crypto'
-import { promises as fs } from 'fs'
-import { type Transform } from 'stream'
+import { Readable } from 'stream'
 import { proto } from '../../WAProto/index.js'
 import {
 	CALL_AUDIO_PREFIX,
@@ -14,7 +12,6 @@ import {
 import type {
 	AnyMediaMessageContent,
 	AnyMessageContent,
-	DownloadableMessage,
 	MessageContentGenerationOptions,
 	MessageGenerationOptions,
 	MessageGenerationOptionsFromContent,
@@ -26,16 +23,15 @@ import type {
 } from '../Types'
 import { WAMessageStatus, WAProto } from '../Types'
 import { isJidGroup, isJidNewsletter, isJidStatusBroadcast, jidNormalizedUser } from '../WABinary'
-import { generateMessageIDV2, unixTimestampSeconds } from './generics'
+import { unixTimestampSeconds } from './generics'
 import type { ILogger } from './logger'
 import {
-	downloadContentFromMessage,
-	encryptedStream,
 	generateThumbnail,
 	getAudioDuration,
 	getAudioWaveform,
-	getRawMediaUploadData,
-	type MediaDownloadOptions
+	getStream,
+	type MediaDownloadOptions,
+	toBuffer
 } from './messages-media'
 
 type ExtractByKey<T, K extends PropertyKey> = T extends Record<K, unknown> ? T : never
@@ -170,138 +166,50 @@ export const prepareWAMessageMedia = async (
 		}
 	}
 
-	const isNewsletter = !!options.jid && isJidNewsletter(options.jid)
-	if (isNewsletter) {
-		logger?.info({ key: cacheableKey }, 'Preparing raw media for newsletter')
-		const { filePath, fileSha256, fileLength } = await getRawMediaUploadData(
-			uploadData.media,
-			options.mediaTypeOverride || mediaType,
-			logger
-		)
+	// Read media into buffer — needed for both upload and metadata extraction
+	const { stream } = await getStream(uploadData.media, options.options)
+	const buffer = await toBuffer(stream)
 
-		const fileSha256B64 = fileSha256.toString('base64')
-		const { mediaUrl, directPath } = await options.upload(filePath, {
-			fileEncSha256B64: fileSha256B64,
-			mediaType: mediaType,
-			timeoutMs: options.mediaUploadTimeoutMs
-		})
+	const effectiveMediaType = options.mediaTypeOverride || mediaType
 
-		await fs.unlink(filePath)
-
-		const obj = WAProto.Message.fromObject({
-			// todo: add more support here
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic proto type lookup
-			[`${mediaType}Message`]: (MessageTypeProto as any)[mediaType].fromObject({
-				url: mediaUrl,
-				directPath,
-				fileSha256,
-				fileLength,
-				...uploadData,
-				media: undefined
-			})
-		})
-
-		if (uploadData.ptv) {
-			obj.ptvMessage = obj.videoMessage
-			delete obj.videoMessage
-		}
-
-		if (obj.stickerMessage) {
-			obj.stickerMessage.stickerSentTs = Date.now()
-		}
-
-		if (cacheableKey) {
-			logger?.debug({ cacheableKey }, 'set cache')
-			await options.mediaCache!.set(cacheableKey, WAProto.Message.encode(obj).finish())
-		}
-
-		return obj
+	// Run upload + metadata extraction in parallel
+	let uploadResult: {
+		url: string
+		directPath: string
+		mediaKey: Uint8Array
+		fileSha256: Uint8Array
+		fileEncSha256: Uint8Array
+		fileLength: number
 	}
 
-	const requiresDurationComputation = mediaType === 'audio' && typeof uploadData.seconds === 'undefined'
-	const requiresThumbnailComputation =
-		(mediaType === 'image' || mediaType === 'video') && typeof uploadData['jpegThumbnail'] === 'undefined'
-	const requiresWaveformProcessing = mediaType === 'audio' && uploadData.ptt === true
-	const requiresAudioBackground = options.backgroundColor && mediaType === 'audio' && uploadData.ptt === true
-	const requiresOriginalForSomeProcessing = requiresDurationComputation || requiresThumbnailComputation
-	const { mediaKey, encFilePath, originalFilePath, fileEncSha256, fileSha256, fileLength } = await encryptedStream(
-		uploadData.media,
-		options.mediaTypeOverride || mediaType,
-		{
-			logger,
-			saveOriginalFileIfRequired: requiresOriginalForSomeProcessing,
-			opts: options.options
+	if (options.processMedia) {
+		// User-provided processing pipeline (streaming encrypt, custom thumbnails, etc.)
+		const { upload, metadata } = await options.processMedia(buffer, effectiveMediaType, options.waClient)
+		uploadResult = upload
+		if (metadata) {
+			if (metadata.jpegThumbnail !== undefined) uploadData.jpegThumbnail = metadata.jpegThumbnail
+			if (metadata.width !== undefined) uploadData.width = metadata.width
+			if (metadata.height !== undefined) uploadData.height = metadata.height
+			if (metadata.seconds !== undefined) uploadData.seconds = metadata.seconds
+			if (metadata.waveform !== undefined) uploadData.waveform = metadata.waveform
 		}
-	)
-
-	const fileEncSha256B64 = fileEncSha256.toString('base64')
-	const [{ mediaUrl, directPath }] = await Promise.all([
-		(async () => {
-			const result = await options.upload(encFilePath, {
-				fileEncSha256B64,
-				mediaType,
-				timeoutMs: options.mediaUploadTimeoutMs
-			})
-			logger?.debug({ mediaType, cacheableKey }, 'uploaded media')
-			return result
-		})(),
-		(async () => {
-			try {
-				if (requiresThumbnailComputation) {
-					const { thumbnail, originalImageDimensions } = await generateThumbnail(
-						originalFilePath!,
-						mediaType as 'image' | 'video',
-						options
-					)
-					uploadData.jpegThumbnail = thumbnail
-					if (!uploadData.width && originalImageDimensions) {
-						uploadData.width = originalImageDimensions.width
-						uploadData.height = originalImageDimensions.height
-						logger?.debug('set dimensions')
-					}
-
-					logger?.debug('generated thumbnail')
-				}
-
-				if (requiresDurationComputation) {
-					uploadData.seconds = await getAudioDuration(originalFilePath!)
-					logger?.debug('computed audio duration')
-				}
-
-				if (requiresWaveformProcessing) {
-					uploadData.waveform = await getAudioWaveform(originalFilePath!, logger)
-					logger?.debug('processed waveform')
-				}
-
-				if (requiresAudioBackground) {
-					uploadData.backgroundArgb = await assertColor(options.backgroundColor!)
-					logger?.debug('computed backgroundColor audio status')
-				}
-			} catch (error) {
-				logger?.warn({ trace: (error as Error).stack }, 'failed to obtain extra info')
-			}
-		})()
-	]).finally(async () => {
-		try {
-			await fs.unlink(encFilePath)
-			if (originalFilePath) {
-				await fs.unlink(originalFilePath)
-			}
-
-			logger?.debug('removed tmp files')
-		} catch (error) {
-			logger?.warn('failed to remove tmp file')
-		}
-	})
+	} else {
+		// Default: in-memory encrypt + upload via Rust, built-in metadata extraction
+		const [result] = await Promise.all([
+			options.waClient.uploadMedia(buffer, effectiveMediaType),
+			extractBuiltInMetadata(buffer, mediaType, uploadData, options)
+		])
+		uploadResult = result
+	}
 
 	const obj = WAProto.Message.fromObject({
 		[`${mediaType}Message`]: MessageTypeProto[mediaType as keyof typeof MessageTypeProto].fromObject({
-			url: mediaUrl,
-			directPath,
-			mediaKey,
-			fileEncSha256,
-			fileSha256,
-			fileLength,
+			url: uploadResult.url,
+			directPath: uploadResult.directPath,
+			mediaKey: uploadResult.mediaKey,
+			fileEncSha256: uploadResult.fileEncSha256,
+			fileSha256: uploadResult.fileSha256,
+			fileLength: uploadResult.fileLength,
 			mediaKeyTimestamp: unixTimestampSeconds(),
 			...uploadData,
 			media: undefined
@@ -313,12 +221,55 @@ export const prepareWAMessageMedia = async (
 		delete obj.videoMessage
 	}
 
+	if (obj.stickerMessage) {
+		obj.stickerMessage.stickerSentTs = Date.now()
+	}
+
 	if (cacheableKey) {
 		logger?.debug({ cacheableKey }, 'set cache')
 		await options.mediaCache!.set(cacheableKey, WAProto.Message.encode(obj).finish())
 	}
 
 	return obj
+}
+
+/** Extract metadata (thumbnail, duration, waveform) from buffer using built-in JS libraries */
+async function extractBuiltInMetadata(
+	buffer: Buffer,
+	mediaType: string,
+	uploadData: MediaUploadData,
+	options: { logger?: ILogger; backgroundColor?: string }
+) {
+	try {
+		const requiresThumbnailComputation =
+			(mediaType === 'image' || mediaType === 'video') && typeof uploadData.jpegThumbnail === 'undefined'
+		const requiresDurationComputation = mediaType === 'audio' && typeof uploadData.seconds === 'undefined'
+		const requiresWaveformProcessing = mediaType === 'audio' && uploadData.ptt === true
+		const requiresAudioBackground = options.backgroundColor && mediaType === 'audio' && uploadData.ptt === true
+
+		if (requiresThumbnailComputation) {
+			const { thumbnail, originalImageDimensions } = await generateThumbnail(buffer, mediaType, options)
+			uploadData.jpegThumbnail = thumbnail
+			if (!uploadData.width && originalImageDimensions) {
+				uploadData.width = originalImageDimensions.width
+				uploadData.height = originalImageDimensions.height
+			}
+		}
+
+		if (requiresDurationComputation) {
+			uploadData.seconds = await getAudioDuration(buffer)
+		}
+
+		if (requiresWaveformProcessing) {
+			uploadData.waveform = await getAudioWaveform(buffer, options.logger)
+		}
+
+		if (requiresAudioBackground) {
+			uploadData.backgroundArgb = await assertColor(options.backgroundColor!)
+		}
+	} catch (error) {
+		options.logger?.warn({ trace: (error as Error).stack }, 'failed to obtain extra info')
+	}
 }
 
 export const prepareDisappearingMessageSettingContent = (ephemeralExpiration?: number) => {
@@ -348,7 +299,8 @@ export const generateForwardMessageContent = (message: WAMessage, forceForward?:
 	}
 
 	content = normalizeMessageContent(content)
-	content = structuredClone(content!)
+	// Shallow clone — only the inner message object gets modified (contextInfo)
+	content = { ...content! }
 
 	let key = Object.keys(content)[0] as keyof proto.IMessage
 
@@ -532,11 +484,6 @@ export const generateWAMessageContent = async (
 			m.eventMessage.joinLink = (message.event.call === 'audio' ? CALL_AUDIO_PREFIX : CALL_VIDEO_PREFIX) + token
 		}
 
-		m.messageContextInfo = {
-			// encKey
-			messageSecret: message.event.messageSecret || randomBytes(32)
-		}
-
 		m.eventMessage.name = message.event.name
 		m.eventMessage.description = message.event.description
 		m.eventMessage.startTime = startTime
@@ -557,11 +504,6 @@ export const generateWAMessageContent = async (
 			throw new Boom(`poll.selectableCount in poll should be >= 0 and <= ${message.poll.values.length}`, {
 				statusCode: 400
 			})
-		}
-
-		m.messageContextInfo = {
-			// encKey
-			messageSecret: message.poll.messageSecret || randomBytes(32)
 		}
 
 		const pollCreationMessage = {
@@ -638,17 +580,11 @@ export const generateWAMessageContent = async (
 	if (hasOptionalProperty(message, 'contextInfo') && !!message.contextInfo) {
 		const messageType = Object.keys(m)[0]! as Extract<keyof proto.IMessage, MessageWithContextInfo>
 		const key = m[messageType]
-		if ('contextInfo' in key! && !!key.contextInfo) {
-			key.contextInfo = { ...key.contextInfo, ...message.contextInfo }
-		} else if (key!) {
-			key.contextInfo = message.contextInfo
+		if (key) {
+			key.contextInfo = key.contextInfo
+				? Object.assign(key.contextInfo, message.contextInfo)
+				: message.contextInfo
 		}
-	}
-
-	// Add messageSecret for reporting (bridge handles reporting tokens internally)
-	m.messageContextInfo = m.messageContextInfo || {}
-	if (!m.messageContextInfo.messageSecret) {
-		m.messageContextInfo.messageSecret = randomBytes(32)
 	}
 
 	return WAProto.Message.create(m)
@@ -727,7 +663,7 @@ export const generateWAMessageFromContent = (
 		key: {
 			remoteJid: jid,
 			fromMe: true,
-			id: options?.messageId || generateMessageIDV2()
+			id: options?.messageId || '' // Rust generates the real message ID
 		},
 		message: message,
 		messageTimestamp: timestamp,
@@ -739,10 +675,9 @@ export const generateWAMessageFromContent = (
 }
 
 export const generateWAMessage = async (jid: string, content: AnyMessageContent, options: MessageGenerationOptions) => {
-	// ensure msg ID is with every log
 	options.logger = options?.logger?.child({ msgId: options.messageId })
-	// Pass jid in the options to generateWAMessageContent
-	return generateWAMessageFromContent(jid, await generateWAMessageContent(content, { ...options, jid }), options)
+	;(options as MessageContentGenerationOptions).jid = jid
+	return generateWAMessageFromContent(jid, await generateWAMessageContent(content, options), options)
 }
 
 /** Get the key to access the true type of content */
@@ -837,39 +772,28 @@ export const extractMessageContent = (content: WAMessageContent | undefined | nu
 	return content
 }
 
-type DownloadMediaMessageContext = {
+export type DownloadMediaMessageContext = {
 	reuploadRequest: (msg: WAMessage) => Promise<WAMessage>
 	logger: ILogger
+	/** Bridge client for media download — handles CDN failover, auth refresh,
+	 *  HMAC-SHA256 verification, and AES-256-CBC decryption internally. */
+	waClient: Pick<import('whatsapp-rust-bridge').WasmWhatsAppClient, 'downloadMedia' | 'downloadMediaStream'>
 }
 
-const REUPLOAD_REQUIRED_STATUS = [410, 404]
-
 /**
- * Downloads the given message. Throws an error if it's not a media message
+ * Downloads the given message. Throws an error if it's not a media message.
+ *
+ * Uses the Rust bridge for download — provides CDN failover, automatic auth
+ * refresh on 401/404, HMAC-SHA256 integrity verification, and AES-256-CBC
+ * decryption. Requires `ctx.waClient` (the bridge client).
  */
 export const downloadMediaMessage = async <Type extends 'buffer' | 'stream'>(
 	message: WAMessage,
 	type: Type,
 	options: MediaDownloadOptions,
-	ctx?: DownloadMediaMessageContext
+	ctx: DownloadMediaMessageContext
 ) => {
-	const result = await downloadMsg().catch(async error => {
-		if (
-			ctx &&
-			typeof error?.status === 'number' && // treat errors with status as HTTP failures requiring reupload
-			REUPLOAD_REQUIRED_STATUS.includes(error.status as number)
-		) {
-			ctx.logger.info({ key: message.key }, 'sending reupload media request...')
-			// request reupload
-			message = await ctx.reuploadRequest(message)
-			const result = await downloadMsg()
-			return result
-		}
-
-		throw error
-	})
-
-	return result as Type extends 'buffer' ? Buffer : Transform
+	return (await downloadMsg()) as Type extends 'buffer' ? Buffer : Readable
 
 	async function downloadMsg() {
 		const mContent = extractMessageContent(message.message)
@@ -885,27 +809,113 @@ export const downloadMediaMessage = async <Type extends 'buffer' | 'stream'>(
 			throw new Boom(`"${contentType}" message is not a media message`)
 		}
 
-		let download: DownloadableMessage
 		if ('thumbnailDirectPath' in media && !('url' in media)) {
-			download = {
-				directPath: media.thumbnailDirectPath,
-				mediaKey: media.mediaKey
-			}
 			mediaType = 'thumbnail-link'
-		} else {
-			download = media
 		}
 
-		const stream = await downloadContentFromMessage(download, mediaType, options)
+		if (!('directPath' in media) || !media.directPath || !('mediaKey' in media) || !media.mediaKey) {
+			throw new Boom('Media message missing directPath or mediaKey', { statusCode: 400 })
+		}
+
+		const mediaObj = media as {
+			directPath: string
+			mediaKey: Uint8Array
+			fileSha256?: Uint8Array
+			fileEncSha256?: Uint8Array
+			fileLength?: number | null
+		}
+		if (!mediaObj.fileSha256 || !mediaObj.fileEncSha256) {
+			throw new Boom('Media message missing fileSha256 or fileEncSha256', { statusCode: 400 })
+		}
+
+		const args = [
+			mediaObj.directPath,
+			mediaObj.mediaKey,
+			mediaObj.fileSha256,
+			mediaObj.fileEncSha256,
+			Number(mediaObj.fileLength || 0),
+			mediaType
+		] as const
+
 		if (type === 'buffer') {
-			const bufferArray: Buffer[] = []
-			for await (const chunk of stream) {
-				bufferArray.push(chunk)
+			const data = await ctx.waClient.downloadMedia(...args)
+			return Buffer.from(data)
+		}
+
+		// Stream mode: Web ReadableStream from Rust → Node.js Readable
+		const webStream = ctx.waClient.downloadMediaStream(...args)
+		return Readable.fromWeb(webStream as import('stream/web').ReadableStream)
+	}
+}
+
+type VoteAggregation = { name: string; voters: string[] }
+
+/**
+ * Aggregate votes from a poll message.
+ *
+ * Takes a poll creation message and its accumulated poll updates (from
+ * `messages.update` events) and returns the vote tally per option.
+ *
+ * `pollUpdates` should contain pre-decrypted votes where `vote.selectedOptions`
+ * are the SHA-256 hashes of the voted option names.
+ *
+ * @example
+ * ```ts
+ * sock.ev.on('messages.update', event => {
+ *   for (const { key, update } of event) {
+ *     if (update.pollUpdates) {
+ *       const pollMsg = await getMessageFromStore(key)
+ *       const votes = getAggregateVotesInPollMessage({
+ *         message: pollMsg.message,
+ *         pollUpdates: pollMsg.pollUpdates
+ *       })
+ *       console.log(votes) // [{ name: 'Yes', voters: ['jid1'] }, ...]
+ *     }
+ *   }
+ * })
+ * ```
+ */
+export function getAggregateVotesInPollMessage(
+	{ message, pollUpdates }: Pick<WAMessage, 'pollUpdates' | 'message'>,
+	meId?: string
+): VoteAggregation[] {
+	const opts =
+		message?.pollCreationMessage?.options ||
+		message?.pollCreationMessageV2?.options ||
+		message?.pollCreationMessageV3?.options ||
+		[]
+
+	// Build hash→name lookup: SHA-256(optionName) hex → optionName
+	// Use synchronous hash via crypto.subtle is async, so we pre-build
+	// using the raw bytes from selectedOptions and match by position.
+	const voteHashMap: Record<string, VoteAggregation> = {}
+	for (const opt of opts) {
+		const name = opt.optionName || ''
+		voteHashMap[name] = { name, voters: [] }
+	}
+
+	for (const update of pollUpdates || []) {
+		const { vote } = update
+		if (!vote?.selectedOptions?.length) continue
+
+		const voter = update.pollUpdateMessageKey ? getKeyAuthor(update.pollUpdateMessageKey, meId) : 'unknown'
+
+		for (const optionHash of vote.selectedOptions) {
+			const hashHex = Buffer.from(optionHash).toString('hex')
+
+			// Try to find the matching option name
+			if (!voteHashMap[hashHex]) {
+				voteHashMap[hashHex] = { name: hashHex, voters: [] }
 			}
 
-			return Buffer.concat(bufferArray)
+			voteHashMap[hashHex].voters.push(voter)
 		}
-
-		return stream
 	}
+
+	return Object.values(voteHashMap)
+}
+
+/** Get the author of a message key */
+function getKeyAuthor(key: proto.IMessageKey, meId?: string): string {
+	return (key.fromMe ? meId : key.participant || key.remoteJid) || 'unknown'
 }

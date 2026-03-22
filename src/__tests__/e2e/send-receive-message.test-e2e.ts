@@ -8,6 +8,7 @@ import P from 'pino'
 import makeWASocket, {
 	DisconnectReason,
 	downloadMediaMessage,
+	type DownloadMediaMessageContext,
 	jidNormalizedUser,
 	proto,
 	useMultiFileAuthState,
@@ -36,11 +37,10 @@ async function createTestClient(label: string): Promise<{
 	const { state, saveCreds } = await useMultiFileAuthState(authFolder)
 
 	const sock = makeWASocket({
-		auth: { creds: state.creds, keys: state.keys },
+		auth: state,
 		waWebSocketUrl: socketUrl,
 		logger: logger.child({ user: label }),
-		agent,
-		fetchAgent: agent
+		agent
 	})
 
 	sock.ev.on('creds.update', saveCreds)
@@ -101,6 +101,14 @@ function waitForMessage(
 
 function getTextContent(msg: proto.IWebMessageInfo): string | undefined {
 	return msg.message?.extendedTextMessage?.text || msg.message?.conversation || undefined
+}
+
+function downloadCtx(sock: WASocket): DownloadMediaMessageContext {
+	return {
+		logger: sock.logger,
+		reuploadRequest: m => sock.updateMediaMessage(m),
+		waClient: sock.waClient!
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -259,17 +267,36 @@ describe('E2E: Two-user messaging', () => {
 		expect(imgMsg?.fileLength).toBeGreaterThan(0)
 		expect(imgMsg?.fileSha256).toBeDefined()
 
-		// Download and verify
-		const buffer = await downloadMediaMessage(
-			received as WAMessage,
-			'buffer',
-			{},
-			{ logger: bob.sock.logger, reuploadRequest: m => bob.sock.updateMediaMessage(m) }
-		)
+		// Download as buffer (via Rust bridge)
+		const buffer = await downloadMediaMessage(received as WAMessage, 'buffer', {}, downloadCtx(bob.sock))
 
 		expect(Buffer.isBuffer(buffer)).toBe(true)
 		expect(buffer.length).toBeGreaterThan(0)
 		// Downloaded content should match original size (approximately — encryption adds padding)
+		expect(buffer.length).toBeGreaterThanOrEqual(image.length * 0.9)
+	})
+
+	// ── Media: image stream ──
+
+	test('Alice sends image → Bob downloads as stream', async () => {
+		const image = readFileSync('./Media/cat.jpeg')
+		const caption = `Stream cat ${Date.now()}`
+
+		const bobGotImage = waitForMessage(bob.sock, m => m.message?.imageMessage?.caption === caption && !m.key?.fromMe)
+
+		await alice.sock.sendMessage(bob.jid, { image, caption })
+		const received = await bobGotImage
+
+		// Download as stream (via Rust bridge → Web ReadableStream → Node.js Readable)
+		const stream = await downloadMediaMessage(received as WAMessage, 'stream', {}, downloadCtx(bob.sock))
+
+		const chunks: Buffer[] = []
+		for await (const chunk of stream) {
+			chunks.push(Buffer.from(chunk))
+		}
+
+		const buffer = Buffer.concat(chunks)
+		expect(buffer.length).toBeGreaterThan(0)
 		expect(buffer.length).toBeGreaterThanOrEqual(image.length * 0.9)
 	})
 
@@ -294,16 +321,103 @@ describe('E2E: Two-user messaging', () => {
 		expect(vidMsg?.mediaKey).toBeDefined()
 		expect(vidMsg?.fileLength).toBeGreaterThan(0)
 
-		// Download and verify
-		const buffer = await downloadMediaMessage(
-			received as WAMessage,
-			'buffer',
-			{},
-			{ logger: alice.sock.logger, reuploadRequest: m => alice.sock.updateMediaMessage(m) }
-		)
+		// Download as buffer
+		const buffer = await downloadMediaMessage(received as WAMessage, 'buffer', {}, downloadCtx(alice.sock))
 
 		expect(Buffer.isBuffer(buffer)).toBe(true)
 		expect(buffer.length).toBeGreaterThan(0)
+	})
+
+	// ── Media: image with streaming processMedia hook ──
+
+	test('Full streaming roundtrip: streaming encrypt → upload → streaming download → file compare', async () => {
+		const image = readFileSync('./Media/cat.jpeg')
+		const caption = `Full streaming roundtrip ${Date.now()}`
+		const nodeFs = await import('node:fs')
+		const nodePath = await import('node:path')
+		const nodeOs = await import('node:os')
+		const { Writable: NodeWritable } = await import('node:stream')
+
+		const tmpDir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'e2e-stream-'))
+
+		const bobGotImage = waitForMessage(bob.sock, m => m.message?.imageMessage?.caption === caption && !m.key?.fromMe)
+
+		// ── UPLOAD: streaming encrypt → temp file → streaming upload ──
+		await alice.sock.sendMessage(
+			bob.jid,
+			{ image, caption },
+			{
+				processMedia: async (buffer, mediaType, waClient) => {
+					const tmpEnc = nodePath.join(tmpDir, 'encrypted.bin')
+
+					// Streaming encrypt: buffer → ReadableStream → Rust AES → file WritableStream
+					const inputStream = new Blob([new Uint8Array(buffer)]).stream()
+					const fileWriteStream = nodeFs.createWriteStream(tmpEnc)
+					const outputStream = NodeWritable.toWeb(fileWriteStream) as WritableStream<Uint8Array>
+
+					const encResult = await waClient.encryptMediaStream(inputStream, outputStream, mediaType)
+
+					// Verify encrypted file exists and has data
+					const encStat = await nodeFs.promises.stat(tmpEnc)
+					expect(encStat.size).toBeGreaterThan(0)
+
+					// Upload from temp file
+					const encData = await nodeFs.promises.readFile(tmpEnc)
+					await nodeFs.promises.unlink(tmpEnc)
+
+					const uploadResult = await waClient.uploadEncryptedMediaStream(
+						() => new Blob([new Uint8Array(encData)]).stream(),
+						encResult.mediaKey,
+						encResult.fileSha256,
+						encResult.fileEncSha256,
+						encResult.fileLength,
+						mediaType
+					)
+
+					return { upload: { ...uploadResult, ...encResult } }
+				}
+			}
+		)
+
+		const received = await bobGotImage
+		const imgMsg = received.message?.imageMessage
+		expect(imgMsg).toBeDefined()
+		expect(imgMsg?.caption).toBe(caption)
+
+		// ── DOWNLOAD: buffer mode → save to file ──
+		const downloadedBuffer = await downloadMediaMessage(received as WAMessage, 'buffer', {}, downloadCtx(bob.sock))
+		const tmpDownloadedBuffer = nodePath.join(tmpDir, 'downloaded-buffer.bin')
+		await nodeFs.promises.writeFile(tmpDownloadedBuffer, downloadedBuffer)
+
+		// ── DOWNLOAD: stream mode → save to file ──
+		const downloadedStream = await downloadMediaMessage(received as WAMessage, 'stream', {}, downloadCtx(bob.sock))
+		const tmpDownloadedStream = nodePath.join(tmpDir, 'downloaded-stream.bin')
+		const chunks: Buffer[] = []
+		for await (const chunk of downloadedStream) {
+			chunks.push(Buffer.from(chunk))
+		}
+
+		const streamBuffer = Buffer.concat(chunks)
+		await nodeFs.promises.writeFile(tmpDownloadedStream, streamBuffer)
+
+		// ── ASSERTIONS ──
+
+		// Both downloads should produce identical content
+		expect(downloadedBuffer.length).toBe(streamBuffer.length)
+		expect(downloadedBuffer.equals(streamBuffer)).toBe(true)
+
+		// Downloaded content should match original
+		expect(downloadedBuffer.length).toBe(image.length)
+		expect(downloadedBuffer.equals(image)).toBe(true)
+
+		// Files on disk should match
+		const fileBuffer = await nodeFs.promises.readFile(tmpDownloadedBuffer)
+		const fileStream = await nodeFs.promises.readFile(tmpDownloadedStream)
+		expect(fileBuffer.equals(fileStream)).toBe(true)
+		expect(fileBuffer.equals(image)).toBe(true)
+
+		// Cleanup
+		await nodeFs.promises.rm(tmpDir, { recursive: true, force: true })
 	})
 
 	// ── Read receipts ──

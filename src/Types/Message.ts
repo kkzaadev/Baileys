@@ -2,7 +2,6 @@ import type { Readable } from 'stream'
 import type { URL } from 'url'
 import { proto } from '../../WAProto/index.js'
 import type { MediaType } from '../Defaults'
-import type { BinaryNode } from '../WABinary'
 import type { GroupMetadata } from './GroupMetadata'
 import type { CacheStore } from './Socket'
 
@@ -80,8 +79,6 @@ export type MessageWithContextInfo =
 	| 'pollResultSnapshotMessage'
 	| 'messageHistoryNotice'
 
-export type DownloadableMessage = { mediaKey?: Uint8Array | null; directPath?: string | null; url?: string | null }
-
 export type MessageReceiptType =
 	| 'read'
 	| 'read-self'
@@ -136,8 +133,6 @@ export type PollMessageOptions = {
 	name: string
 	selectableCount?: number
 	values: string[]
-	/** 32 byte message secret to encrypt poll selections */
-	messageSecret?: Uint8Array
 	toAnnouncementGroup?: boolean
 }
 
@@ -151,7 +146,6 @@ export type EventMessageOptions = {
 	isCancelled?: boolean
 	isScheduleCall?: boolean
 	extraGuestsAllowed?: boolean
-	messageSecret?: Uint8Array<ArrayBufferLike>
 }
 
 type SharePhoneNumber = {
@@ -299,11 +293,6 @@ type MinimalRelayOptions = {
 export type MessageRelayOptions = MinimalRelayOptions & {
 	/** only send to a specific participant; used when a message decryption fails for a single user */
 	participant?: { jid: string; count: number }
-	/** additional attributes to add to the WA binary node */
-	additionalAttributes?: { [_: string]: string }
-	additionalNodes?: BinaryNode[]
-	/** should we use the devices cache, or fetch afresh from the server; default assumed to be "true" */
-	useUserDevicesCache?: boolean
 	/** jid list of participants for status@broadcast */
 	statusJidList?: string[]
 }
@@ -330,15 +319,22 @@ export type MessageGenerationOptionsFromContent = MiscMessageGenerationOptions &
 	userJid: string
 }
 
-export type WAMediaUploadFunction = (
-	encFilePath: string,
-	opts: { fileEncSha256B64: string; mediaType: MediaType; timeoutMs?: number }
-) => Promise<{ mediaUrl: string; directPath: string; meta_hmac?: string; ts?: number; fbid?: number }>
+export type MediaMetadata = {
+	jpegThumbnail?: string
+	width?: number
+	height?: number
+	seconds?: number
+	waveform?: Uint8Array
+}
 
 export type MediaGenerationOptions = {
 	logger?: ILogger
 	mediaTypeOverride?: MediaType
-	upload: WAMediaUploadFunction
+	/** Bridge client — handles encryption + upload internally */
+	waClient: Pick<
+		import('whatsapp-rust-bridge').WasmWhatsAppClient,
+		'uploadMedia' | 'encryptMediaStream' | 'uploadEncryptedMediaStream'
+	>
 	/** cache media so it does not have to be uploaded again */
 	mediaCache?: CacheStore
 
@@ -349,6 +345,24 @@ export type MediaGenerationOptions = {
 	backgroundColor?: string
 
 	font?: number
+
+	/**
+	 * Optional: custom media processing pipeline.
+	 * Called with the raw media buffer. Must return upload result + optional metadata.
+	 *
+	 * Use this for large files (streaming encrypt to temp file → streaming upload)
+	 * or custom thumbnail generation (ffmpeg, etc.).
+	 *
+	 * If not provided: default in-memory path via waClient.uploadMedia().
+	 */
+	processMedia?: (
+		media: Buffer,
+		mediaType: MediaType,
+		waClient: MediaGenerationOptions['waClient']
+	) => Promise<{
+		upload: import('whatsapp-rust-bridge').UploadMediaResult
+		metadata?: Partial<MediaMetadata>
+	}>
 }
 export type MessageContentGenerationOptions = MediaGenerationOptions & {
 	getUrlInfo?: (text: string) => Promise<WAUrlInfo | undefined>
@@ -372,11 +386,5 @@ export type WAMessageUpdate = { update: Partial<WAMessage>; key: WAMessageKey }
 export type WAMessageCursor = { before: WAMessageKey | undefined } | { after: WAMessageKey | undefined }
 
 export type MessageUserReceiptUpdate = { key: WAMessageKey; receipt: MessageUserReceipt }
-
-export type MediaDecryptionKeyInfo = {
-	iv: Uint8Array
-	cipherKey: Uint8Array
-	macKey?: Uint8Array
-}
 
 export type MinimalMessage = Pick<WAMessage, 'key' | 'messageTimestamp'>

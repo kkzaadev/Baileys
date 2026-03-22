@@ -35,9 +35,11 @@ export const makeChatActionMethods = (ctx: SocketContext) => ({
 				await client.starMessage(jid, msg.id, mod.star.star)
 			}
 		} else if ('markRead' in mod) {
-			// markRead through chatModify — not directly supported,
-			// use readMessages() instead for proper read receipts
-			ctx.logger.debug({ jid }, 'chatModify markRead — use readMessages() for read receipts')
+			await client.markChatAsRead(jid, mod.markRead)
+		} else if ('delete' in mod) {
+			await client.deleteChat(jid)
+		} else if ('deleteForMe' in mod) {
+			await client.deleteMessageForMe(jid, mod.deleteForMe.key.id!, !!mod.deleteForMe.key.fromMe)
 		} else if ('pushNameSetting' in mod) {
 			await client.setPushName(mod.pushNameSetting)
 		} else {

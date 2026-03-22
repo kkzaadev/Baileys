@@ -86,6 +86,21 @@ export const makeGroupMethods = (ctx: SocketContext) => ({
 		return ctx.getClient().groupAcceptInvite(code)
 	},
 
+	/** Join a group via a GroupInviteMessage (V4 invite). */
+	groupAcceptInviteV4: async (
+		key: { remoteJid?: string | null },
+		msg: { inviteCode?: string | null; inviteExpiration?: number | null; groupJid?: string | null }
+	): Promise<string | undefined> => {
+		if (!msg.inviteCode || !msg.groupJid) return undefined
+		const adminJid = key.remoteJid || ''
+		return ctx.getClient().groupAcceptInviteV4(
+			msg.groupJid,
+			msg.inviteCode,
+			msg.inviteExpiration || 0,
+			adminJid
+		)
+	},
+
 	groupGetInviteInfo: async (code: string): Promise<GroupMetadata> => {
 		const g = await ctx.getClient().groupGetInviteInfo(code)
 		return bridgeGroupToMetadata(g)

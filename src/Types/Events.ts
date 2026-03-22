@@ -149,8 +149,6 @@ export type BufferedEventData = {
 	groupUpdates: { [jid: string]: Partial<GroupMetadata> }
 }
 
-export type BaileysEvent = keyof BaileysEventMap
-
 export interface BaileysEventEmitter {
 	on<T extends keyof BaileysEventMap>(event: T, listener: (arg: BaileysEventMap[T]) => void): void
 	off<T extends keyof BaileysEventMap>(event: T, listener: (arg: BaileysEventMap[T]) => void): void

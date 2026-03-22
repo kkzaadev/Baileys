@@ -1,9 +1,11 @@
 import { Boom } from '@hapi/boom'
 import { createWhatsAppClient, initWasmEngine, type WasmWhatsAppClient } from 'whatsapp-rust-bridge'
 import { DEFAULT_CONNECTION_CONFIG } from '../Defaults/index'
-import type { ConnectionState, UserFacingSocketConfig } from '../Types'
+import type { ConnectionState, UserFacingSocketConfig, WAMessage } from '../Types'
 import { DisconnectReason } from '../Types'
 import { makeEventBuffer } from '../Utils/event-buffer'
+import { downloadMediaMessage } from '../Utils/messages'
+import type { MediaDownloadOptions } from '../Utils/messages-media'
 import { makeBlockingMethods } from './blocking'
 import { makeChatActionMethods } from './chat-actions'
 import { makeContactMethods } from './contacts'
@@ -106,6 +108,13 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 				/* ignore if already freed */
 			}
 		}
+
+		// Flush any debounced writes to disk before shutdown
+		try {
+			await auth.store?.flush?.()
+		} catch {
+			/* ignore */
+		}
 	}
 
 	// Logout — disconnect, clear creds, and emit loggedOut
@@ -146,11 +155,15 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		})
 	}
 
-	return {
+	const sock = {
 		ev,
 		logger,
 		get user() {
 			return user
+		},
+		/** The underlying bridge client (for advanced use, e.g. downloadMediaMessage) */
+		get waClient() {
+			return client
 		},
 		/** Whether the WebSocket is currently connected */
 		get isConnected() {
@@ -235,6 +248,15 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		groupMemberAddMode: async (jid: string, mode: 'admin_add' | 'all_member_add') => {
 			await ctx.getClient().groupMemberAddMode(jid, mode)
 		},
+		/** Send a status/story message to specified recipients. Returns message ID. */
+		sendStatusMessage: async (
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			message: Record<string, any>,
+			recipients: string[]
+		): Promise<string> => {
+			const msgId = await ctx.getClient().sendStatusMessage(message, recipients)
+			return msgId
+		},
 		...makeMessageMethods(ctx),
 		...makeGroupMethods(ctx),
 		...makeContactMethods(ctx),
@@ -242,8 +264,22 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		...makeChatActionMethods(ctx),
 		...makePresenceMethods(ctx),
 		...makeBlockingMethods(ctx),
-		...makeNewsletterMethods(ctx)
+		...makeNewsletterMethods(ctx),
+		/** Download media from a message (convenience — auto-wires bridge client). */
+		downloadMedia: async <T extends 'buffer' | 'stream'>(
+			message: WAMessage,
+			type: T,
+			options: MediaDownloadOptions = {}
+		) => {
+			return downloadMediaMessage(message, type, options, {
+				logger,
+				reuploadRequest: (m: WAMessage) => sock.updateMediaMessage(m),
+				waClient: ctx.getClient()
+			})
+		}
 	}
+
+	return sock
 }
 
 export default makeWASocket

@@ -1,7 +1,7 @@
 import { Boom } from '@hapi/boom'
-import NodeCache from '@cacheable/node-cache'
 import readline from 'readline'
-import makeWASocket, { CacheStore, DEFAULT_CONNECTION_CONFIG, DisconnectReason, fetchLatestWaWebVersion, generateMessageIDV2, isJidNewsletter, proto, useMultiFileAuthState, WAMessageContent, WAMessageKey } from '../src'
+import makeWASocket, { DEFAULT_CONNECTION_CONFIG, DisconnectReason, fetchLatestWaWebVersion, proto, useMultiFileAuthState } from '../lib/index.js'
+import { getWasmMemoryBytes } from 'whatsapp-rust-bridge'
 import P from 'pino'
 
 const logger = P({
@@ -26,10 +26,6 @@ logger.level = 'trace'
 const doReplies = process.argv.includes('--do-reply')
 const usePairingCode = process.argv.includes('--use-pairing-code')
 
-// external map to store retry counts of messages when decryption/encryption fails
-// keep this out of the socket itself, so as to prevent a message decryption/encryption loop across socket restarts
-const msgRetryCounterCache = new NodeCache() as CacheStore
-
 const onDemandMap = new Map<string, string>()
 
 // Read line interface
@@ -51,14 +47,7 @@ const startSock = async() => {
 		version,
 		logger,
 		waWebSocketUrl: process.env.SOCKET_URL ?? DEFAULT_CONNECTION_CONFIG.waWebSocketUrl,
-		auth: state, // includes creds, keys, and bridge store for persistence
-		msgRetryCounterCache,
-		generateHighQualityLinkPreview: true,
-		// ignore all broadcast messages -- to receive the same
-		// comment the line below out
-		// shouldIgnoreJid: jid => isJidBroadcast(jid),
-		// implement to handle retries & poll updates
-		getMessage
+		auth: state, // includes creds and bridge store for persistence
 	})
 
 	// the process function lets you process all events that just occurred
@@ -82,7 +71,7 @@ const startSock = async() => {
 
 				if (qr) {
 					// Pairing code for Web clients
-					if (usePairingCode && !sock.authState.creds.registered) {
+					if (usePairingCode && !sock.isLoggedIn) {
 						const phoneNumber = await question('Please enter your phone number:\n')
 						const code = await sock.requestPairingCode(phoneNumber)
 						console.log(`Pairing code: ${code}`)
@@ -135,21 +124,61 @@ const startSock = async() => {
           for (const msg of upsert.messages) {
             if (msg.message?.conversation || msg.message?.extendedTextMessage?.text) {
               const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text
-              if (text == "requestPlaceholder" && !upsert.requestId) {
-                const messageId = await sock.requestPlaceholderResend(msg.key)
-								logger.debug({ id: messageId }, 'requested placeholder resync')
-              }
-
-              // go to an old chat and send this
+              // on-demand history sync: send "onDemandHistSync" to trigger
               if (text == "onDemandHistSync") {
                 const messageId = await sock.fetchMessageHistory(50, msg.key, msg.messageTimestamp!)
                 logger.debug({ id: messageId }, 'requested on-demand history resync')
               }
 
               if (text === "ping") {
-              	const id = generateMessageIDV2(sock.user?.id)
-              	logger.debug({id, orig_id: msg.key.id }, 'replying to message')
-                await sock.sendMessage(msg.key.remoteJid!, { text: 'pong '+msg.key.id }, {messageId: id })
+                await sock.sendMessage(msg.key.remoteJid!, { text: 'pong '+msg.key.id })
+              }
+
+              if (text === "memory") {
+                const v8 = await import('v8')
+                const mb = (bytes: number) => (bytes / 1024 / 1024).toFixed(1) + ' MB'
+                const n = (v: number) => new Intl.NumberFormat('en').format(v)
+
+                const mem = process.memoryUsage()
+                const heap = v8.getHeapStatistics()
+                const spaces = v8.getHeapSpaceStatistics()
+                  .filter(s => s.space_used_size > 0)
+                  .sort((a, b) => b.space_used_size - a.space_used_size)
+                const wasm = getWasmMemoryBytes()
+                const diag = await sock.waClient!.getMemoryDiagnostics() as Record<string, number>
+                const wasmEntries = Object.entries(diag)
+                  .filter(([, v]) => v > 0)
+                  .sort(([, a], [, b]) => b - a)
+
+                const report = [
+                  '📊 Memory Report',
+                  '',
+                  `── Process (RSS: ${mb(mem.rss)}) ──`,
+                  `  Heap Used:     ${mb(mem.heapUsed)} / ${mb(mem.heapTotal)}`,
+                  `  External:      ${mb(mem.external)}`,
+                  `  Array Buffers: ${mb(mem.arrayBuffers)}`,
+                  '',
+                  `── V8 Heap Spaces ──`,
+                  ...spaces.map(s =>
+                    `  ${s.space_name.replace('_space', '').padEnd(20)} ${mb(s.space_used_size).padStart(10)}`
+                  ),
+                  '',
+                  `── V8 Stats ──`,
+                  `  Native contexts:   ${heap.number_of_native_contexts}`,
+                  `  Global handles:    ${n(heap.used_global_handles_size)} / ${n(heap.total_global_handles_size)}`,
+                  `  Malloced:          ${mb(heap.malloced_memory)}`,
+                  `  Peak malloced:     ${mb(heap.peak_malloced_memory)}`,
+                  '',
+                  `── WASM (${mb(wasm)}) ──`,
+                  ...wasmEntries.length
+                    ? wasmEntries.map(([k, v]) => `  ${k.padEnd(26)} ${n(v).padStart(8)}`)
+                    : ['  (all caches empty)'],
+                  '',
+                  `── Total: ${mb(mem.rss + wasm)} ──`,
+                ].join('\n')
+
+                console.log(report)
+                await sock.sendMessage(msg.key.remoteJid!, { text: report })
               }
             }
           }
@@ -199,24 +228,17 @@ const startSock = async() => {
 			}
 
 			if(events['chats.delete']) {
-				logger.debug('chats deleted ', events['chats.delete'])
+				logger.debug({ chats: events['chats.delete'] }, 'chats deleted')
 			}
 
 			if(events['group.member-tag.update']) {
-				logger.debug('group member tag update', JSON.stringify(events['group.member-tag.update'], undefined, 2))
+				logger.debug({ update: events['group.member-tag.update'] }, 'group member tag update')
 			}
 		}
 	)
 
 	return sock
 
-	async function getMessage(key: WAMessageKey): Promise<WAMessageContent | undefined> {
-	  // Implement a way to retreive messages that were upserted from messages.upsert
-			// up to you
-
-		// only if store is present
-		return proto.Message.create({ conversation: 'test' })
-	}
 }
 
 startSock()

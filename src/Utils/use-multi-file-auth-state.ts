@@ -1,9 +1,7 @@
 import { Mutex } from 'async-mutex'
-import { mkdir, readFile, stat, unlink, writeFile } from 'fs/promises'
+import { mkdir, readFile, stat, writeFile } from 'fs/promises'
 import { join } from 'path'
-import { proto } from '../../WAProto/index.js'
-import type { AuthenticationCreds, AuthenticationState, SignalDataTypeMap } from '../Types'
-import { initAuthCreds } from './auth-utils'
+import type { AuthenticationCreds, AuthenticationState } from '../Types'
 import { BufferJSON } from './generics'
 import { useBridgeStore } from './use-bridge-store'
 
@@ -24,6 +22,10 @@ const getFileLock = (path: string): Mutex => {
 	return mutex
 }
 
+const defaultCreds = (): AuthenticationCreds => ({
+	registered: false
+})
+
 /**
  * stores the full authentication state in a single folder.
  * Far more efficient than singlefileauthstate
@@ -34,6 +36,8 @@ const getFileLock = (path: string): Mutex => {
 export const useMultiFileAuthState = async (
 	folder: string
 ): Promise<{ state: AuthenticationState; saveCreds: () => Promise<void> }> => {
+	const fixFileName = (file?: string) => file?.replace(/\//g, '__')?.replace(/:/g, '-')
+
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	const writeData = async (data: any, file: string) => {
 		const filePath = join(folder, fixFileName(file)!)
@@ -61,25 +65,9 @@ export const useMultiFileAuthState = async (
 					release()
 				}
 			})
-		} catch (error) {
+		} catch {
 			return null
 		}
-	}
-
-	const removeData = async (file: string) => {
-		try {
-			const filePath = join(folder, fixFileName(file)!)
-			const mutex = getFileLock(filePath)
-
-			return mutex.acquire().then(async release => {
-				try {
-					await unlink(filePath)
-				} catch {
-				} finally {
-					release()
-				}
-			})
-		} catch {}
 	}
 
 	const folderInfo = await stat(folder).catch(() => {})
@@ -93,44 +81,13 @@ export const useMultiFileAuthState = async (
 		await mkdir(folder, { recursive: true })
 	}
 
-	const fixFileName = (file?: string) => file?.replace(/\//g, '__')?.replace(/:/g, '-')
-
-	const creds: AuthenticationCreds = (await readData('creds.json')) || initAuthCreds()
+	const creds: AuthenticationCreds = (await readData('creds.json')) || defaultCreds()
 	const store = await useBridgeStore(folder)
 
 	return {
 		state: {
 			creds,
-			store,
-			keys: {
-				get: async (type, ids) => {
-					const data: { [_: string]: SignalDataTypeMap[typeof type] } = {}
-					await Promise.all(
-						ids.map(async id => {
-							let value = await readData(`${type}-${id}.json`)
-							if (type === 'app-state-sync-key' && value) {
-								value = proto.Message.AppStateSyncKeyData.fromObject(value)
-							}
-
-							data[id] = value
-						})
-					)
-
-					return data
-				},
-				set: async data => {
-					const tasks: Promise<void>[] = []
-					for (const category in data) {
-						for (const id in data[category as keyof SignalDataTypeMap]) {
-							const value = data[category as keyof SignalDataTypeMap]![id]
-							const file = `${category}-${id}.json`
-							tasks.push(value ? writeData(value, file) : removeData(file))
-						}
-					}
-
-					await Promise.all(tasks)
-				}
-			}
+			store
 		},
 		saveCreds: async () => {
 			return writeData(creds, 'creds.json')
