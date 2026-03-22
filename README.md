@@ -1,8 +1,8 @@
-# Baileys (Rust Fork)
+# Baileyrs (Rust Fork)
 
 A WhatsApp Web API library powered by a Rust/WASM bridge for protocol handling, encryption, and media operations.
 
-> **This is a fork of [Baileys](https://github.com/WhiskeySockets/Baileys)** that replaces internal JavaScript protocol logic with [whatsapp-rust](https://github.com/jlucaso1/whatsapp-rust) compiled to WASM via [whatsapp-rust-bridge](https://github.com/jlucaso1/whatsapp-rust-bridge).
+> **This is a fork of [Baileys](https://github.com/WhiskeySockets/Baileys)** that replaces internal JavaScript protocol logic with [whatsapp-rust](https://github.com/jlucaso1/whatsapp-rust) compiled to WASM via [whatsapp-rust-bridge](https://github.com/WhiskeySockets/whatsapp-rust-bridge/tree/full-client-wasm).
 
 ## What's Different
 
@@ -13,23 +13,22 @@ A WhatsApp Web API library powered by a Rust/WASM bridge for protocol handling, 
 | Media upload/download | JS fetch + temp files | Rust with CDN failover, auth refresh, resumable upload |
 | Key management | JS auth state | Rust `PersistenceManager` |
 | Auto-reconnect | Manual `startSock()` loop | Built-in with fibonacci backoff |
-| Memory allocator | dlmalloc (default) | Talc (~2x faster, ~63% smaller) |
 
 ## Install
 
 ```
-yarn add baileys-rust  # or your fork's package name
+yarn add baileyrs  # or your fork's package name
 ```
 
 Then import:
 ```ts
-import makeWASocket from 'baileys'
+import makeWASocket from 'baileyrs'
 ```
 
 ## Quick Start
 
 ```ts
-import makeWASocket, { DisconnectReason, useMultiFileAuthState } from 'baileys'
+import makeWASocket, { DisconnectReason, useMultiFileAuthState } from 'baileyrs'
 import { Boom } from '@hapi/boom'
 
 const { state, saveCreds } = await useMultiFileAuthState('auth_info')
@@ -86,7 +85,7 @@ if (!sock.isLoggedIn) {
 All crypto keys and Signal sessions are managed by the Rust bridge. The JS auth state only tracks user identity (`me`) for reconnection.
 
 ```ts
-import { useMultiFileAuthState } from 'baileys'
+import { useMultiFileAuthState } from 'baileyrs'
 
 const { state, saveCreds } = await useMultiFileAuthState('auth_folder')
 const sock = makeWASocket({ auth: state })
@@ -235,7 +234,7 @@ for await (const chunk of stream) {
 If you need to download media outside of a socket context (e.g., custom logger or reupload logic), use the standalone `downloadMediaMessage` utility:
 
 ```ts
-import { downloadMediaMessage } from 'baileys'
+import { downloadMediaMessage } from 'baileyrs'
 
 const buffer = await downloadMediaMessage(msg, 'buffer', {}, {
     logger: sock.logger,
