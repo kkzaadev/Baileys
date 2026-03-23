@@ -1,5 +1,6 @@
 import { Boom } from '@hapi/boom'
 import { Readable } from 'stream'
+import type { UploadMediaResult } from 'whatsapp-rust-bridge'
 import { proto } from '../../WAProto/index.js'
 import {
 	CALL_AUDIO_PREFIX,
@@ -33,7 +34,6 @@ import {
 	type MediaDownloadOptions,
 	toBuffer
 } from './messages-media'
-import type { UploadMediaResult } from 'whatsapp-rust-bridge'
 
 type ExtractByKey<T, K extends PropertyKey> = T extends Record<K, unknown> ? T : never
 type RequireKey<T, K extends keyof T> = T & {
