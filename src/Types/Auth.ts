@@ -61,7 +61,7 @@ export type AuthenticationCreds = {
 	signedPreKey?: SignedKeyPair
 	registrationId?: number
 	advSecretKey?: string
-	account?: proto.IADVSignedDeviceIdentity
+	account?: proto.IAdvSignedDeviceIdentity
 	signalIdentities?: SignalIdentity[]
 	myAppStateKeyId?: string
 	firstUnuploadedPreKeyId?: number

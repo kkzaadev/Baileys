@@ -124,6 +124,47 @@ const startSock = async() => {
                 await sock.sendMessage(msg.key.remoteJid!, { text: 'pong '+msg.key.id })
               }
 
+              // Example: send a PIX payment button via relayMessage
+              // Demonstrates interactive native flow messages with auto-inferred <biz> node.
+              if (text === "pix") {
+                const msgId = await sock.relayMessage(msg.key.remoteJid!, {
+                  interactiveMessage: {
+                    body: { text: 'Send a PIX payment using the button below.' },
+                    interactiveMessage: {
+                      nativeFlowMessage: {
+                        buttons: [{
+                          name: 'payment_info',
+                          buttonParamsJson: JSON.stringify({
+                            currency: 'BRL',
+                            total_amount: { value: 0, offset: 100 },
+                            reference_id: Math.random().toString(36).substring(2, 13).toUpperCase(),
+                            type: 'physical-goods',
+                            order: {
+                              status: 'pending',
+                              subtotal: { value: 0, offset: 100 },
+                              order_type: 'ORDER',
+                              items: [{ name: '', amount: { value: 0, offset: 100 }, quantity: 0, sale_amount: { value: 0, offset: 100 } }]
+                            },
+                            payment_settings: [{
+                              type: 'pix_static_code',
+                              pix_static_code: {
+                                merchant_name: 'Example Bot',
+                                key: '00000000-0000-0000-0000-000000000000',
+                                key_type: 'EVP'
+                              }
+                            }],
+                            share_payment_status: false,
+                            referral: 'chat_attachment'
+                          })
+                        }],
+                        messageVersion: 1
+                      }
+                    }
+                  }
+                })
+                logger.info({ msgId }, 'PIX payment button sent via relayMessage')
+              }
+
               if (text === "memory") {
                 const v8 = await import('v8')
                 const mb = (bytes: number) => (bytes / 1024 / 1024).toFixed(1) + ' MB'

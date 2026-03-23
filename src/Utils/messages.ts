@@ -33,6 +33,7 @@ import {
 	type MediaDownloadOptions,
 	toBuffer
 } from './messages-media'
+import type { UploadMediaResult } from 'whatsapp-rust-bridge'
 
 type ExtractByKey<T, K extends PropertyKey> = T extends Record<K, unknown> ? T : never
 type RequireKey<T, K extends keyof T> = T & {
@@ -160,7 +161,7 @@ export const prepareWAMessageMedia = async (
 			const obj = proto.Message.decode(mediaBuff)
 			const key = `${mediaType}Message`
 
-			Object.assign(obj[key as keyof proto.Message]!, { ...uploadData, media: undefined })
+			Object.assign(obj[key as keyof proto.Message], { ...uploadData, media: undefined })
 
 			return obj
 		}
@@ -173,14 +174,7 @@ export const prepareWAMessageMedia = async (
 	const effectiveMediaType = options.mediaTypeOverride || mediaType
 
 	// Run upload + metadata extraction in parallel
-	let uploadResult: {
-		url: string
-		directPath: string
-		mediaKey: Uint8Array
-		fileSha256: Uint8Array
-		fileEncSha256: Uint8Array
-		fileLength: number
-	}
+	let uploadResult: UploadMediaResult
 
 	if (options.processMedia) {
 		// User-provided processing pipeline (streaming encrypt, custom thumbnails, etc.)
@@ -800,11 +794,11 @@ export const downloadMediaMessage = async <Type extends 'buffer' | 'stream'>(
 		}
 
 		const contentType = getContentType(mContent)
-		let mediaType = contentType?.replace('Message', '') as MediaType
+		let mediaType = String(contentType)?.replace('Message', '') as MediaType
 		const media = mContent[contentType!]
 
 		if (!media || typeof media !== 'object' || (!('url' in media) && !('thumbnailDirectPath' in media))) {
-			throw new Boom(`"${contentType}" message is not a media message`)
+			throw new Boom(`"${String(contentType)}" message is not a media message`)
 		}
 
 		if ('thumbnailDirectPath' in media && !('url' in media)) {

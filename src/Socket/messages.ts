@@ -1,8 +1,10 @@
 import { Boom } from '@hapi/boom'
+import { encodeProto } from 'whatsapp-rust-bridge'
 import type {
 	AnyMessageContent,
 	BaileysEventMap,
 	MessageGenerationOptions,
+	MessageRelayOptions,
 	WAMessage,
 	WAMessageContent
 } from '../Types'
@@ -49,7 +51,7 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 		if (contentType === 'protocolMessage') {
 			const protoMsg = msg.protocolMessage
 			if (protoMsg?.type === WAProto.Message.ProtocolMessage.Type.REVOKE && protoMsg?.key) {
-				await client.revokeMessage(jid, protoMsg.key.id!)
+				await client.revokeMessage(jid, protoMsg.key.id)
 				return fullMsg
 			}
 
@@ -59,7 +61,7 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 				protoMsg?.editedMessage
 			) {
 				const editBytes = WAProto.Message.encode(protoMsg.editedMessage).finish()
-				const newMsgId = await client.editMessageBytes(jid, protoMsg.key.id!, editBytes)
+				const newMsgId = await client.editMessageBytes(jid, protoMsg.key.id, editBytes)
 				fullMsg.key.id = newMsgId || fullMsg.key.id
 				return fullMsg
 			}
@@ -123,6 +125,39 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 		])
 
 		return message
+	},
+
+	/**
+	 * Low-level message relay — sends a raw proto.IMessage with full control
+	 * over the message ID. Use `sendMessage` for the high-level API that handles
+	 * media upload, message generation, link previews, etc.
+	 *
+	 * @param jid Recipient JID
+	 * @param message Raw protobuf Message (snake_case keys)
+	 * @param options Relay options (messageId, statusJidList)
+	 * @returns Message ID
+	 */
+	relayMessage: async (
+		jid: string,
+		message: WAProto.IMessage,
+		{ messageId, statusJidList }: MessageRelayOptions = {}
+	): Promise<string> => {
+		await ctx.ensureInit()
+		const client = ctx.getClient()
+
+		// Rust handles messageContextInfo internally (reporting tokens, message secrets).
+		// Strip it to avoid conflicts with the Rust-generated values.
+		delete (message as Record<string, unknown>).messageContextInfo
+
+		if (jid === 'status@broadcast' && statusJidList?.length) {
+			return client.sendStatusMessage(message as Record<string, unknown>, statusJidList)
+		}
+
+		// Use encodeProto (Rust prost) for binary encoding — it has the full
+		// proto schema including InteractiveMessage/FutureProofMessage oneofs
+		// that the fork's minimal WAProto doesn't include.
+		const bytes = encodeProto('Message', message)
+		return client.relayMessageBytes(jid, bytes, messageId ?? null)
 	},
 
 	readMessages: async (keys: { remoteJid: string; id: string; participant?: string }[]) => {

@@ -121,6 +121,16 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 
 	const logout = async (msg?: string) => {
 		user = undefined
+
+		// Send remove-companion-device IQ to server, then disconnect
+		if (client) {
+			try {
+				await client.logout()
+			} catch {
+				/* best-effort — continue with cleanup */
+			}
+		}
+
 		ev.emit('connection.update', {
 			connection: 'close',
 			lastDisconnect: {
