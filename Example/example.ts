@@ -1,6 +1,6 @@
 import { Boom } from '@hapi/boom'
 import readline from 'readline'
-import makeWASocket, { DEFAULT_CONNECTION_CONFIG, DisconnectReason, fetchLatestWaWebVersion, proto, useMultiFileAuthState } from '../lib/index.js'
+import makeWASocket, { DEFAULT_CONNECTION_CONFIG, DisconnectReason, fetchLatestWaWebVersion, proto, useMultiFileAuthState, useLegacyMultiFileAuthState, wrapLegacyStore } from '../lib/index.js'
 import { getWasmMemoryBytes } from 'whatsapp-rust-bridge'
 import P from 'pino'
 
@@ -23,10 +23,8 @@ const logger = P({
 })
 logger.level = 'trace'
 
-const doReplies = process.argv.includes('--do-reply')
 const usePairingCode = process.argv.includes('--use-pairing-code')
-
-const onDemandMap = new Map<string, string>()
+const useLegacyStore = process.argv.includes('--use-legacy-store')
 
 // Read line interface
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
@@ -34,7 +32,21 @@ const question = (text: string) => new Promise<string>((resolve) => rl.question(
 
 // start a connection
 const startSock = async() => {
-	const { state } = await useMultiFileAuthState('baileys_auth_info')
+	// Two auth modes:
+	// 1. Default: bridge-native binary store (useMultiFileAuthState)
+	// 2. Legacy: load an existing upstream Baileys session via wrapLegacyStore
+	//    Usage: npx ts-node example.ts --use-legacy-store /path/to/baileys_auth_info
+	let state: Awaited<ReturnType<typeof useMultiFileAuthState>>['state']
+	if (useLegacyStore) {
+		const legacyPath = process.argv[process.argv.indexOf('--use-legacy-store') + 1] || 'baileys_auth_info'
+		logger.info({ path: legacyPath }, 'loading upstream Baileys session via wrapLegacyStore')
+		const legacy = await useLegacyMultiFileAuthState(legacyPath)
+		const store = await wrapLegacyStore(legacy.state, legacy.saveCreds)
+		state = { store }
+	} else {
+		({ state } = await useMultiFileAuthState('baileys_auth_info'))
+	}
+
 	// fetch latest version of WA Web
 	const { version, isLatest } = await fetchLatestWaWebVersion()
 	logger.debug({version: version.join('.'), isLatest}, `using latest WA version`)
@@ -104,7 +116,7 @@ const startSock = async() => {
         const upsert = events['messages.upsert']
         logger.debug(upsert, 'messages.upsert fired')
 
-        if (!!upsert.requestId) {
+        if (upsert.requestId) {
           logger.debug(upsert, 'placeholder request message received')
         }
 
@@ -220,7 +232,7 @@ const startSock = async() => {
 			if(events['messages.update']) {
 				logger.debug(events['messages.update'], 'messages.update fired')
 
-				for(const { key, update } of events['messages.update']) {
+				for(const { update } of events['messages.update']) {
 					if(update.pollUpdates) {
 						logger.debug({ pollUpdates: update.pollUpdates }, 'got poll update')
 					}

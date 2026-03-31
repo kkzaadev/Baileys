@@ -96,6 +96,22 @@ Files created in `auth_folder/`:
 - `pre-key-*.bin` — Signal pre-keys
 - `sender-key-*.bin` — Group sender keys
 
+### Using an Existing Upstream Baileys Session
+
+For users with an existing session from upstream [@whiskeysockets/baileys](https://github.com/WhiskeySockets/Baileys) (or any custom store built on it), `wrapLegacyStore` imports the session without requiring a new QR scan. This is the recommended path when migrating — it reuses your existing authentication and avoids re-pairing.
+
+```ts
+import makeWASocket, { useLegacyMultiFileAuthState, wrapLegacyStore } from 'baileyrs'
+
+const { state, saveCreds } = await useLegacyMultiFileAuthState('/path/to/baileys_auth_info')
+const store = await wrapLegacyStore(state, saveCreds)
+const sock = makeWASocket({ auth: { store } })
+```
+
+The wrapper translates credential formats, manages Signal session lifecycle via a native binary store, and handles address format differences between upstream Baileys' libsignal and the Rust bridge. Bridge-only state is persisted in a `bridge-data/` directory alongside the original session.
+
+See [docs/wrap-legacy-store.md](docs/wrap-legacy-store.md) for the full architecture walkthrough.
+
 ## Sending Messages
 
 ```ts
