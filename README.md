@@ -96,21 +96,43 @@ Files created in `auth_folder/`:
 - `pre-key-*.bin` — Signal pre-keys
 - `sender-key-*.bin` — Group sender keys
 
-### Using an Existing Upstream Baileys Session
+### Custom Store (Native)
 
-For users with an existing session from upstream [@whiskeysockets/baileys](https://github.com/WhiskeySockets/Baileys) (or any custom store built on it), `wrapLegacyStore` imports the session without requiring a new QR scan. This is the recommended path when migrating — it reuses your existing authentication and avoids re-pairing.
+For new deployments, implement `JsStoreCallbacks` directly — a flat binary key-value store. The Rust bridge handles all serialization internally.
+
+```ts
+import makeWASocket from 'baileyrs'
+
+const store = {
+  async get(store: string, key: string): Promise<Uint8Array | null> {
+    // read from your DB: SELECT value FROM wa_store WHERE store=? AND key=?
+  },
+  async set(store: string, key: string, value: Uint8Array): Promise<void> {
+    // upsert to your DB: INSERT ... ON DUPLICATE KEY UPDATE
+  },
+  async delete(store: string, key: string): Promise<void> {
+    // delete from your DB: DELETE FROM wa_store WHERE store=? AND key=?
+  },
+  async flush(): Promise<void> { /* flush pending writes if you batch */ }
+}
+
+const sock = makeWASocket({ auth: { store } })
+```
+
+No creds management, no type routing — just `(store, key) → bytes`. Works with any backend (MySQL, Redis, S3, etc.).
+
+### Migrating from Upstream Baileys
+
+`wrapLegacyStore` imports an existing session from [@whiskeysockets/baileys](https://github.com/WhiskeySockets/Baileys) (or any custom store built on it, like [mysql-baileys](https://github.com/bobslavtriev/mysql-baileys)) without requiring a new QR scan.
 
 ```ts
 import makeWASocket, { useLegacyMultiFileAuthState, wrapLegacyStore } from 'baileyrs'
 
+// Works with any upstream auth state: useMultiFileAuthState, useMySQLAuthState, etc.
 const { state, saveCreds } = await useLegacyMultiFileAuthState('/path/to/baileys_auth_info')
 const store = await wrapLegacyStore(state, saveCreds)
 const sock = makeWASocket({ auth: { store } })
 ```
-
-The wrapper translates credential formats, manages Signal session lifecycle via a native binary store, and handles address format differences between upstream Baileys' libsignal and the Rust bridge. Bridge-only state is persisted in a `bridge-data/` directory alongside the original session.
-
-See [docs/wrap-legacy-store.md](docs/wrap-legacy-store.md) for the full architecture walkthrough.
 
 ## Sending Messages
 
