@@ -17,7 +17,7 @@ A WhatsApp Web API library powered by a Rust/WASM bridge for protocol handling, 
 ## Install
 
 ```
-yarn add baileyrs  # or your fork's package name
+yarn add baileyrs
 ```
 
 Then import:
