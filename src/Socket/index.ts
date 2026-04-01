@@ -1,7 +1,9 @@
 import { Boom } from '@hapi/boom'
+import { EventEmitter } from 'events'
 import { createWhatsAppClient, initWasmEngine, type WasmWhatsAppClient } from 'whatsapp-rust-bridge'
+import type { proto } from '../../WAProto/index.js'
 import { DEFAULT_CONNECTION_CONFIG } from '../Defaults/index'
-import type { ConnectionState, UserFacingSocketConfig, WAMessage } from '../Types'
+import type { BinaryNode, ConnectionState, Contact, UserFacingSocketConfig, WAMessage } from '../Types'
 import { DisconnectReason } from '../Types'
 import { makeEventBuffer } from '../Utils/event-buffer'
 import { downloadMediaMessage } from '../Utils/messages'
@@ -20,6 +22,83 @@ import type { SocketContext } from './types'
 
 let wasmInitialized = false
 
+/** Helper: await init then return the bridge client */
+async function requireClient(ctx: SocketContext): Promise<WasmWhatsAppClient> {
+	await ctx.ensureInit()
+	return ctx.getClient()
+}
+
+/** Build the signalRepository object that delegates to the bridge */
+function makeSignalRepository(ctx: SocketContext) {
+	return {
+		decryptMessage: async (opts: { jid: string; type: 'pkmsg' | 'msg'; ciphertext: Uint8Array }) => {
+			return (await requireClient(ctx)).signalDecryptMessage(opts.jid, opts.type, opts.ciphertext)
+		},
+		encryptMessage: async (opts: {
+			jid: string
+			data: Uint8Array
+		}): Promise<{ type: 'pkmsg' | 'msg'; ciphertext: Uint8Array }> => {
+			return (await requireClient(ctx)).signalEncryptMessage(opts.jid, opts.data)
+		},
+		decryptGroupMessage: async (opts: { group: string; authorJid: string; msg: Uint8Array }) => {
+			return (await requireClient(ctx)).signalDecryptGroupMessage(opts.group, opts.authorJid, opts.msg)
+		},
+		encryptGroupMessage: async (opts: {
+			group: string
+			data: Uint8Array
+			meId: string
+		}): Promise<{ senderKeyDistributionMessage: Uint8Array; ciphertext: Uint8Array }> => {
+			return (await requireClient(ctx)).signalEncryptGroupMessage(opts.group, opts.data, opts.meId)
+		},
+		processSenderKeyDistributionMessage: async (): Promise<void> => {},
+		injectE2ESession: async (): Promise<void> => {},
+		validateSession: async (jid: string): Promise<{ exists: boolean; reason?: string }> => {
+			const exists = await (await requireClient(ctx)).signalValidateSession(jid)
+			return { exists }
+		},
+		jidToSignalProtocolAddress: (jid: string): string => {
+			try {
+				return ctx.getClient().jidToSignalProtocolAddress(jid)
+			} catch {
+				return `${jid}.0`
+			}
+		},
+		migrateSession: async (): Promise<{ migrated: number; skipped: number; total: number }> => {
+			return { migrated: 0, skipped: 0, total: 0 }
+		},
+		deleteSession: async (jids: string[]): Promise<void> => {
+			return (await requireClient(ctx)).signalDeleteSessions(jids)
+		}
+	}
+}
+
+/** Build the ws EventEmitter with auto-enable raw node forwarding */
+function makeWsEmitter(getClient: () => WasmWhatsAppClient | undefined) {
+	const ws = new EventEmitter()
+	let rawNodeEnabled = false
+
+	const originalOn = ws.on.bind(ws)
+	ws.on = (event: string | symbol, listener: (...args: unknown[]) => void) => {
+		if (typeof event === 'string' && event.startsWith('CB:') && !rawNodeEnabled) {
+			rawNodeEnabled = true
+			try {
+				getClient()?.setRawNodeForwarding(true)
+			} catch {
+				// bridge not ready yet — will enable when it initializes
+			}
+		}
+
+		return originalOn(event, listener)
+	}
+
+	Object.defineProperty(ws, 'isOpen', {
+		get: () => getClient()?.isConnected() ?? false,
+		enumerable: true
+	})
+
+	return { ws, isRawNodeEnabled: () => rawNodeEnabled }
+}
+
 const makeWASocket = (config: UserFacingSocketConfig) => {
 	const fullConfig = { ...DEFAULT_CONNECTION_CONFIG, ...config }
 	const { auth, logger } = fullConfig
@@ -28,11 +107,20 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	let client: WasmWhatsAppClient | undefined
 	let user: { id?: string; lid?: string } | undefined
 
-	// Shared context for all method factories
+	const { ws, isRawNodeEnabled } = makeWsEmitter(() => client)
+
+	let tagEpoch = 0
+	const tagPrefix = `${Date.now().toString(36)}.`
+	const generateMessageTag = () => `${tagPrefix}${tagEpoch++}`
+
+	let pairedAccount: { platform?: string; businessName?: string } | undefined
+	let cachedAccount: proto.IAdvSignedDeviceIdentity | undefined
+
 	const ctx: SocketContext = {
 		ev,
 		logger,
 		fullConfig,
+		ws,
 		getUser: () => user,
 		setUser: u => {
 			user = u
@@ -49,9 +137,18 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		}
 	}
 
-	const handleEvent = makeEventHandler(ctx)
+	const handleEvent = makeEventHandler(ctx, {
+		onPairSuccess: data => {
+			pairedAccount = data
+			client
+				?.getAccount?.()
+				.then((acc: proto.IAdvSignedDeviceIdentity | undefined) => {
+					cachedAccount = acc ?? undefined
+				})
+				.catch(() => {})
+		}
+	})
 
-	// Initialize bridge client
 	const init = async () => {
 		if (!wasmInitialized) {
 			initWasmEngine(logger)
@@ -69,19 +166,27 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			fullConfig.cache ?? null
 		)
 
-		// Set device props from Baileys browser config (e.g. Browsers.macOS('Chrome'))
-		// browser is [osName, browserName, osVersion]
 		const [osName, browserName] = fullConfig.browser
 		await client.setDeviceProps(osName, browserName)
 
-		// Pass user-configured WA version to bridge
 		const [major, minor, patch] = fullConfig.version
 		client.setVersion(major, minor, patch)
 
-		// Restore user identity from Rust's persisted device state
-		const [jid, lid] = await Promise.all([client.getJid(), client.getLid()])
+		const [jid, lid, account] = await Promise.all([
+			client.getJid(),
+			client.getLid(),
+			client.getAccount().catch(() => undefined)
+		])
 		if (jid) {
 			user = { id: jid, lid: lid ?? undefined }
+		}
+
+		if (account) {
+			cachedAccount = account
+		}
+
+		if (isRawNodeEnabled()) {
+			client.setRawNodeForwarding(true)
 		}
 
 		client.run()
@@ -93,10 +198,9 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		logger.error({ err }, 'failed to initialize bridge client')
 	})
 
-	// End/cleanup — guards against double-free
 	const end = async () => {
 		const c = client
-		client = undefined // prevent double-free
+		client = undefined
 		if (c) {
 			try {
 				await c.disconnect()
@@ -105,29 +209,26 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			}
 
 			try {
+				await auth.store?.flush?.()
+			} catch {
+				/* ignore */
+			}
+
+			try {
 				c.free()
 			} catch {
-				/* ignore if already freed */
+				/* ignore */
 			}
-		}
-
-		// Flush any debounced writes to disk before shutdown
-		try {
-			await auth.store?.flush?.()
-		} catch {
-			/* ignore */
 		}
 	}
 
 	const logout = async (msg?: string) => {
 		user = undefined
-
-		// Send remove-companion-device IQ to server, then disconnect
 		if (client) {
 			try {
 				await client.logout()
 			} catch {
-				/* best-effort — continue with cleanup */
+				/* ignore */
 			}
 		}
 
@@ -141,7 +242,6 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		await end()
 	}
 
-	// Wait for a specific connection state
 	const waitForConnectionUpdate = (check: (update: Partial<ConnectionState>) => boolean, timeoutMs?: number) => {
 		return new Promise<void>((resolve, reject) => {
 			let timeout: NodeJS.Timeout | undefined
@@ -166,77 +266,135 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	const sock = {
 		ev,
 		logger,
+		ws,
+		type: 'md' as const,
 		get user() {
 			return user
 		},
-		/** The underlying bridge client (for advanced use, e.g. downloadMediaMessage) */
 		get waClient() {
 			return client
 		},
-		/** Whether the WebSocket is currently connected */
 		get isConnected() {
 			return client?.isConnected() ?? false
 		},
-		/** Whether the client has completed pairing */
 		get isLoggedIn() {
 			return client?.isLoggedIn() ?? false
 		},
+		get authState() {
+			return {
+				creds: {
+					...(auth.creds ?? {}),
+					me: user ? ({ id: user.id, lid: user.lid } as Contact) : undefined,
+					account: cachedAccount,
+					platform: pairedAccount?.platform
+				},
+				keys: auth.keys ?? {}
+			}
+		},
+		generateMessageTag,
+		sendNode: async (frame: BinaryNode) => {
+			return (await requireClient(ctx)).sendNode(frame)
+		},
+		assertSessions: async (jids: string[], force?: boolean) => {
+			return (await requireClient(ctx)).assertSessions(jids, force ?? false)
+		},
+		getUSyncDevices: async (jids: string[], useCache: boolean, ignoreZeroDevices: boolean) => {
+			return (await requireClient(ctx)).getUSyncDevices(jids, useCache, ignoreZeroDevices)
+		},
+		waitForMessage: <T = BinaryNode>(msgId: string, timeoutMs?: number): Promise<T> => {
+			return new Promise<T>((resolve, reject) => {
+				const timeout = timeoutMs ?? fullConfig.defaultQueryTimeoutMs
+				let timer: NodeJS.Timeout | undefined
+				const onRecv = (data: T) => {
+					if (timer) clearTimeout(timer)
+					resolve(data)
+				}
+
+				ws.once(`TAG:${msgId}`, onRecv as (...args: unknown[]) => void)
+				if (timeout) {
+					timer = setTimeout(() => {
+						ws.off(`TAG:${msgId}`, onRecv as (...args: unknown[]) => void)
+						reject(new Boom('Timed out waiting for message', { statusCode: DisconnectReason.timedOut }))
+					}, timeout)
+				}
+			})
+		},
+		query: async (node: BinaryNode, timeoutMs?: number): Promise<BinaryNode> => {
+			if (!node.attrs.id) {
+				node.attrs.id = generateMessageTag()
+			}
+
+			const msgId = node.attrs.id
+			const resultPromise = sock.waitForMessage<BinaryNode>(msgId, timeoutMs)
+			try {
+				await sock.sendNode(node)
+			} catch (err) {
+				ws.removeAllListeners(`TAG:${msgId}`)
+				throw err
+			}
+
+			return resultPromise
+		},
+		sendRawMessage: async (data: Uint8Array | Buffer) => {
+			return (await requireClient(ctx)).sendRawMessage(data instanceof Uint8Array ? data : new Uint8Array(data))
+		},
+		createParticipantNodes: async (
+			jids: string[],
+			message: proto.IMessage,
+			extraAttrs?: BinaryNode['attrs']
+		): Promise<{ nodes: BinaryNode[]; shouldIncludeDeviceIdentity: boolean }> => {
+			return (await requireClient(ctx)).createParticipantNodes(jids, message, extraAttrs ?? {})
+		},
+		signalRepository: makeSignalRepository(ctx),
+		/** @deprecated Pre-key management is handled by the Rust bridge. */
+		uploadPreKeys: async () => {},
+		/** @deprecated Pre-key management is handled by the Rust bridge. */
+		uploadPreKeysToServerIfRequired: async () => {},
 		end,
 		logout,
 		waitForConnectionUpdate,
-		/** Enable or disable automatic reconnection (enabled by default) */
 		setAutoReconnect: (enabled: boolean) => {
 			client?.setAutoReconnect(enabled)
 		},
-		/** Alias for sendPresence (original Baileys compat) */
 		sendPresenceUpdate: (presence: 'available' | 'unavailable') => {
 			return ctx.getClient().sendPresence(presence)
 		},
-		/** Fetch all privacy settings as a key-value map */
 		fetchPrivacySettings: async () => {
 			return ctx.getClient().fetchPrivacySettings()
 		},
-		/** Update last seen privacy */
+		updatePrivacySetting: async (category: string, value: string) => {
+			await ctx.getClient().updatePrivacySetting(category, value)
+		},
 		updateLastSeenPrivacy: async (value: string) => {
 			await ctx.getClient().updatePrivacySetting('last', value)
 		},
-		/** Update online privacy */
 		updateOnlinePrivacy: async (value: string) => {
 			await ctx.getClient().updatePrivacySetting('online', value)
 		},
-		/** Update profile picture privacy */
 		updateProfilePicturePrivacy: async (value: string) => {
 			await ctx.getClient().updatePrivacySetting('profile', value)
 		},
-		/** Update status privacy */
 		updateStatusPrivacy: async (value: string) => {
 			await ctx.getClient().updatePrivacySetting('status', value)
 		},
-		/** Update read receipts privacy */
 		updateReadReceiptsPrivacy: async (value: string) => {
 			await ctx.getClient().updatePrivacySetting('readreceipts', value)
 		},
-		/** Update groups add privacy */
 		updateGroupsAddPrivacy: async (value: string) => {
 			await ctx.getClient().updatePrivacySetting('groupadd', value)
 		},
-		/** Update default disappearing messages duration (seconds). 0 to disable. */
 		updateDefaultDisappearingMode: async (duration: number) => {
 			await ctx.getClient().updateDefaultDisappearingMode(duration)
 		},
-		/** Reject an incoming call */
 		rejectCall: async (callId: string, callFrom: string) => {
 			await ctx.getClient().rejectCall(callId, callFrom)
 		},
-		/** Fetch user status/about text */
 		fetchStatus: async (...jids: string[]) => {
 			return ctx.getClient().fetchStatus(jids) as Promise<Array<{ jid: string; status?: string }>>
 		},
-		/** Get business profile for a JID */
 		getBusinessProfile: async (jid: string) => {
 			return ctx.getClient().getBusinessProfile(jid)
 		},
-		/** Request on-demand message history from primary phone */
 		fetchMessageHistory: async (
 			count: number,
 			oldestMsgKey: { remoteJid?: string | null; id?: string | null; fromMe?: boolean | null },
@@ -252,18 +410,11 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 					oldestMsgTimestamp
 				)
 		},
-		/** Set who can add members to a group */
 		groupMemberAddMode: async (jid: string, mode: 'admin_add' | 'all_member_add') => {
 			await ctx.getClient().groupMemberAddMode(jid, mode)
 		},
-		/** Send a status/story message to specified recipients. Returns message ID. */
-		sendStatusMessage: async (
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			message: Record<string, any>,
-			recipients: string[]
-		): Promise<string> => {
-			const msgId = await ctx.getClient().sendStatusMessage(message, recipients)
-			return msgId
+		sendStatusMessage: async (message: Record<string, unknown>, recipients: string[]): Promise<string> => {
+			return ctx.getClient().sendStatusMessage(message, recipients)
 		},
 		...makeMessageMethods(ctx),
 		...makeGroupMethods(ctx),
@@ -273,7 +424,6 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		...makePresenceMethods(ctx),
 		...makeBlockingMethods(ctx),
 		...makeNewsletterMethods(ctx),
-		/** Download media from a message (convenience — auto-wires bridge client). */
 		downloadMedia: async <T extends 'buffer' | 'stream'>(
 			message: WAMessage,
 			type: T,

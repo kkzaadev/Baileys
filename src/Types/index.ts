@@ -1,4 +1,5 @@
 export * from './Auth'
+export * from './BinaryNode'
 export * from './GroupMetadata'
 export * from './Chat'
 export * from './Contact'

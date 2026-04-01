@@ -70,6 +70,8 @@ export default defineConfig([globalIgnores([
         "@typescript-eslint/no-floating-promises": "error",
         "@typescript-eslint/no-unused-vars": ["error", {
             caughtErrors: "none",
+            argsIgnorePattern: "^_",
+            varsIgnorePattern: "^_",
         }],
     },
 }]);

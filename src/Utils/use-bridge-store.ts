@@ -94,7 +94,12 @@ export async function useBridgeStore(folder: string): Promise<NonNullable<Authen
 					pendingWrites.delete(cacheKey)
 				}
 
-				await writeFile(filePath(store, key), value)
+				try {
+					await writeFile(filePath(store, key), value)
+				} catch {
+					// Directory may have been removed during shutdown
+				}
+
 				return
 			}
 
@@ -106,6 +111,7 @@ export async function useBridgeStore(folder: string): Promise<NonNullable<Authen
 
 			const path = filePath(store, key)
 			const timer = setTimeout(() => void flushWrite(cacheKey), WRITE_DELAY_MS)
+			timer.unref() // Don't keep the process alive for debounced writes
 			pendingWrites.set(cacheKey, { path, value, timer })
 		},
 

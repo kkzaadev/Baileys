@@ -1,10 +1,42 @@
 import { Boom } from '@hapi/boom'
 import type { MessageInfo, WhatsAppEvent } from 'whatsapp-rust-bridge'
 import { proto } from '../../WAProto/index.js'
-import type { BaileysEventMap, ConnectionState, WAMessage, WAPresence } from '../Types'
+import type { BaileysEventMap, BinaryNode, ConnectionState, WAMessage, WAPresence } from '../Types'
 import { DisconnectReason, WAProto } from '../Types'
 import type { SocketContext } from './types'
 import { jidStr } from './types'
+
+const DEF_CALLBACK_PREFIX = 'CB:'
+
+const DEF_TAG_PREFIX = 'TAG:'
+
+/** Emit CB: pattern events on the ws EventEmitter for retrocompat */
+const emitCBEvents = (ctx: SocketContext, node: BinaryNode) => {
+	const { ws } = ctx
+	const l0 = node.tag
+	const l1 = node.attrs || {}
+	const l2 = Array.isArray(node.content) ? (node.content[0] as BinaryNode)?.tag : ''
+
+	// Emit TAG:id for IQ response matching (used by query/waitForMessage)
+	const id = l1.id
+	if (id) {
+		ws.emit(`${DEF_TAG_PREFIX}${id}`, node)
+	}
+
+	for (const [key, val] of Object.entries(l1)) {
+		if (l2) {
+			ws.emit(`${DEF_CALLBACK_PREFIX}${l0},${key}:${val},${l2}`, node)
+		}
+
+		ws.emit(`${DEF_CALLBACK_PREFIX}${l0},${key}:${val}`, node)
+	}
+
+	if (l2) {
+		ws.emit(`${DEF_CALLBACK_PREFIX}${l0},,${l2}`, node)
+	}
+
+	ws.emit(`${DEF_CALLBACK_PREFIX}${l0}`, node)
+}
 
 /** Convert bridge message event data to a Baileys WAMessage */
 const bridgeMessageToWAMessage = (msgData: Record<string, unknown>, info: MessageInfo): WAMessage => {
@@ -24,8 +56,13 @@ const bridgeMessageToWAMessage = (msgData: Record<string, unknown>, info: Messag
 }
 
 /** Create the event handler that maps bridge events → Baileys events */
-export const makeEventHandler = (ctx: SocketContext) => {
-	return (event: WhatsAppEvent) => {
+export const makeEventHandler = (
+	ctx: SocketContext,
+	callbacks?: {
+		onPairSuccess?: (data: { platform?: string; businessName?: string }) => void
+	}
+) => {
+	return (event: WhatsAppEvent & { type: string; data?: unknown }) => {
 		const { ev } = ctx
 
 		switch (event.type) {
@@ -54,8 +91,14 @@ export const makeEventHandler = (ctx: SocketContext) => {
 				break
 
 			case 'pair_success': {
-				const { id, lid } = event.data
+				const { id, lid, platform, business_name } = event.data as {
+					id: string
+					lid: string
+					platform?: string
+					business_name?: string
+				}
 				ctx.setUser({ id, lid })
+				callbacks?.onPairSuccess?.({ platform, businessName: business_name })
 				break
 			}
 
@@ -360,8 +403,20 @@ export const makeEventHandler = (ctx: SocketContext) => {
 				ctx.logger.trace({ eventType: event.type }, 'bridge event (no Baileys mapping)')
 				break
 
-			default:
-				ctx.logger.debug({ eventType: (event as { type: string }).type }, 'unknown bridge event')
+			default: {
+				// Handle raw_node events (not in WhatsAppEvent union yet — added by bridge extension)
+				const evType = (event as { type: string }).type
+				if (evType === 'raw_node') {
+					const node = (event as unknown as { data: BinaryNode }).data
+					if (node) {
+						emitCBEvents(ctx, node)
+					}
+				} else {
+					ctx.logger.debug({ eventType: evType }, 'unknown bridge event')
+				}
+
+				break
+			}
 		}
 	}
 }

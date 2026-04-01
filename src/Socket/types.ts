@@ -1,3 +1,4 @@
+import type { EventEmitter } from 'events'
 import type { WasmWhatsAppClient } from 'whatsapp-rust-bridge'
 import type { BaileysEventEmitter, SocketConfig } from '../Types'
 import type { ILogger } from '../Utils/logger'
@@ -13,6 +14,8 @@ export interface SocketContext {
 	ensureInit: () => Promise<void>
 	/** Returns the bridge client, throwing if not initialized */
 	getClient: () => WasmWhatsAppClient
+	/** Raw stanza EventEmitter for CB: pattern compat */
+	ws: EventEmitter
 }
 
 /** Convert a bridge Jid struct to a string */
