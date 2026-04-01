@@ -4,9 +4,11 @@ import type {
 	AnyMessageContent,
 	BaileysEventMap,
 	MessageGenerationOptions,
+	MessageReceiptType,
 	MessageRelayOptions,
 	WAMessage,
-	WAMessageContent
+	WAMessageContent,
+	WAMessageKey
 } from '../Types'
 import { WAProto } from '../Types'
 import { generateWAMessage, getContentType, normalizeMessageContent } from '../Utils/messages'
@@ -163,5 +165,93 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 	readMessages: async (keys: { remoteJid: string; id: string; participant?: string }[]) => {
 		await ctx.ensureInit()
 		await ctx.getClient().readMessages(keys)
+	},
+
+	/**
+	 * Send a receipt for messages. The bridge handles most receipt types automatically
+	 * (delivered, sender). Use `readMessages` for the common case of sending read receipts.
+	 *
+	 * Supported types via bridge: 'read', 'read-self'
+	 * Auto-handled by bridge: 'sender', 'inactive', undefined (delivered)
+	 * Not supported: 'played', 'hist_sync', 'peer_msg' (logged as warning)
+	 */
+	sendReceipt: async (jid: string, participant: string | undefined, messageIds: string[], type: MessageReceiptType) => {
+		await ctx.ensureInit()
+		if (!messageIds.length) return
+
+		if (type === 'read' || type === 'read-self') {
+			const keys = messageIds.map(id => ({
+				remoteJid: jid,
+				id,
+				...(participant ? { participant } : {})
+			}))
+			await ctx.getClient().readMessages(keys)
+		} else {
+			// delivered/sender/inactive receipts are sent automatically by the Rust bridge
+			// played/hist_sync/peer_msg require bridge-side support
+			ctx.logger.debug(
+				{ type, jid, count: messageIds.length },
+				'sendReceipt: type handled automatically by bridge or not yet supported'
+			)
+		}
+	},
+
+	/**
+	 * Send receipts for multiple message keys, grouped by JID and participant.
+	 */
+	sendReceipts: async (keys: WAMessageKey[], type: MessageReceiptType) => {
+		await ctx.ensureInit()
+		const client = ctx.getClient()
+
+		// Group by (jid, participant), skip fromMe
+		const groups = new Map<string, { jid: string; participant: string | undefined; ids: string[] }>()
+		for (const { remoteJid, id, participant, fromMe } of keys) {
+			if (fromMe || !remoteJid || !id) continue
+			const groupKey = `${remoteJid}:${participant ?? ''}`
+			let entry = groups.get(groupKey)
+			if (!entry) {
+				entry = { jid: remoteJid, participant: participant ?? undefined, ids: [] }
+				groups.set(groupKey, entry)
+			}
+
+			entry.ids.push(id)
+		}
+
+		if (type === 'read' || type === 'read-self') {
+			const readKeys = keys
+				.filter(k => !k.fromMe && k.remoteJid && k.id)
+				.map(k => ({ remoteJid: k.remoteJid!, id: k.id!, ...(k.participant ? { participant: k.participant } : {}) }))
+			if (readKeys.length) {
+				await client.readMessages(readKeys)
+			}
+		} else {
+			ctx.logger.debug(
+				{ type, count: keys.length },
+				'sendReceipts: type handled automatically by bridge or not yet supported'
+			)
+		}
+	},
+
+	/**
+	 * Request resend of a placeholder message via PeerDataOperationRequest.
+	 * Wraps the request in a protocolMessage and relays it to the chat.
+	 */
+	requestPlaceholderResend: async (
+		messageKey: WAMessageKey,
+		_msgData?: Partial<WAMessage>
+	): Promise<string | undefined> => {
+		await ctx.ensureInit()
+
+		const message: WAProto.IMessage = {
+			protocolMessage: {
+				peerDataOperationRequestMessage: {
+					peerDataOperationRequestType: WAProto.Message.PeerDataOperationRequestType.PLACEHOLDER_MESSAGE_RESEND,
+					placeholderMessageResendRequest: [{ messageKey }]
+				},
+				type: WAProto.Message.ProtocolMessage.Type.PEER_DATA_OPERATION_REQUEST_MESSAGE
+			}
+		}
+
+		return ctx.getClient().relayMessage(messageKey.remoteJid!, message, null)
 	}
 })

@@ -1,4 +1,4 @@
-import type { ChatModification } from '../Types'
+import type { ChatModification, WAPatchName } from '../Types'
 import type { SocketContext } from './types'
 
 export const makeChatActionMethods = (ctx: SocketContext) => ({
@@ -21,6 +21,9 @@ export const makeChatActionMethods = (ctx: SocketContext) => ({
 	/**
 	 * Compatibility wrapper for original Baileys chatModify API.
 	 * Routes to the appropriate bridge method based on the modification type.
+	 *
+	 * Fully supported: archive, pin, mute, star, markRead, delete, deleteForMe, pushNameSetting
+	 * Not yet in bridge (app-state patches): clear, contact, disableLinkPreviews, labels, quickReply
 	 */
 	chatModify: async (mod: ChatModification, jid: string) => {
 		const client = ctx.getClient()
@@ -43,7 +46,38 @@ export const makeChatActionMethods = (ctx: SocketContext) => ({
 		} else if ('pushNameSetting' in mod) {
 			await client.setPushName(mod.pushNameSetting)
 		} else {
-			ctx.logger.debug({ mod: Object.keys(mod) }, 'chatModify action not supported in bridge mode')
+			// App-state-patch variants not yet exposed by bridge:
+			// clear, contact, disableLinkPreviews, addLabel, addChatLabel,
+			// removeChatLabel, addMessageLabel, removeMessageLabel, quickReply
+			const variant = Object.keys(mod)[0]
+			ctx.logger.warn(
+				{ variant, jid },
+				'chatModify: variant requires app-state patch support not yet available in bridge'
+			)
 		}
+	},
+
+	/**
+	 * Force re-sync of app state collections.
+	 *
+	 * In the Rust bridge architecture, app state is managed internally by the engine
+	 * and synced automatically on connect. This method is a no-op provided for API
+	 * compatibility with upstream Baileys.
+	 */
+	resyncAppState: async (_collections?: readonly WAPatchName[], _isInitialSync?: boolean) => {
+		ctx.logger.info('resyncAppState: app state is synced automatically by the Rust bridge')
+	},
+
+	/**
+	 * Fetch disappearing message duration for contacts.
+	 *
+	 * Not yet supported — requires USyncQuery which is handled internally by the bridge.
+	 * Disappearing mode changes are emitted via the 'disappearing_mode_changed' event.
+	 */
+	fetchDisappearingDuration: async (..._jids: string[]) => {
+		ctx.logger.warn(
+			'fetchDisappearingDuration: not yet available in bridge mode — listen for disappearing_mode_changed events instead'
+		)
+		return undefined
 	}
 })
