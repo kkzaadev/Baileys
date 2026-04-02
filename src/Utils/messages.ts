@@ -238,7 +238,7 @@ async function extractBuiltInMetadata(
 		const requiresThumbnailComputation =
 			(mediaType === 'image' || mediaType === 'video') && typeof uploadData.jpegThumbnail === 'undefined'
 		const requiresDurationComputation = mediaType === 'audio' && typeof uploadData.seconds === 'undefined'
-		const requiresWaveformProcessing = mediaType === 'audio' && uploadData.ptt === true
+		const requiresWaveformProcessing = mediaType === 'audio' && uploadData.ptt === true && typeof uploadData.waveform === 'undefined'
 		const requiresAudioBackground = options.backgroundColor && mediaType === 'audio' && uploadData.ptt === true
 
 		if (requiresThumbnailComputation) {
@@ -556,6 +556,11 @@ export const generateWAMessageContent = async (
 
 			if (message.mentionAll) {
 				key.contextInfo.nonJidMentions = 1
+			}
+		} else if (key!) {
+			key.contextInfo = {
+				mentionedJid: message.mentions,
+				nonJidMentions: message.mentionAll ? 1 : 0
 			}
 		}
 	}
